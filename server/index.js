@@ -52,23 +52,41 @@ async function scrapeROSTR() {
 
 async function scrapeDoorsOpen() {
   try {
-    const { data } = await axios.get("https://www.doorsopen.co/jobs/", {
+    const resp = await axios.get("https://www.doorsopen.co/jobs/", {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
+    const data = resp.data;
+    console.log(`Doors Open DEBUG: status=${resp.status}, html length=${data.length}`);
+    console.log(`Doors Open DEBUG: first 300 chars: ${data.substring(0, 300)}`);
     const $ = cheerio.load(data);
+    // Try multiple selectors to find what matches
+    const articleCount = $("article").length;
+    const listingItemCount = $(".listing-item").length;
+    const articleListingCount = $("article.listing-item").length;
+    const mediaCount = $(".media").length;
+    const wellCount = $(".well").length;
+    console.log(`Doors Open DEBUG: article=${articleCount}, .listing-item=${listingItemCount}, article.listing-item=${articleListingCount}, .media=${mediaCount}, .well=${wellCount}`);
     const jobs = [];
-    $("article.listing-item").each((_, el) => {
-      const titleEl = $(el).find(".listing-item__title a").first();
+    // Try the broadest working selector
+    $("article.listing-item, .listing-item, article.media").each((_, el) => {
+      const titleEl = $(el).find(".listing-item__title a, h3 a, h4 a, .title a").first();
       const title = titleEl.text().trim();
       const href = titleEl.attr("href") || "";
       const url = href.startsWith("http") ? href : "https://www.doorsopen.co" + href;
-      const company = $(el).find(".media-body .listing-item__info--item").first().text().trim();
-      const location = $(el).find(".listing-item__info--item").eq(1).text().trim();
+      const company = $(el).find(".listing-item__info--item, .company, [class*='company']").first().text().trim();
+      const location = $(el).find(".listing-item__info--item, [class*='location']").eq(1).text().trim();
       if (title && title.length > 3) {
         jobs.push({ title, company: company || "Unknown", location, url, source: "doorsopen", id: `do-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
       }
     });
+    if (jobs.length === 0) {
+      // Dump all article/li text for debugging
+      console.log("Doors Open DEBUG: 0 jobs found. Dumping first 3 article texts:");
+      $("article, .job, li").slice(0, 3).each((i, el) => {
+        console.log(`  [${i}] classes="${$(el).attr("class") || ""}" text="${$(el).text().trim().substring(0, 150)}"`);
+      });
+    }
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Doors Open: scraped ${unique.length} jobs`);
@@ -109,17 +127,32 @@ async function scrapeDigilogue() {
 
 async function scrapeUMG() {
   try {
-    const { data } = await axios.get("https://www.umusiccareers.com/?category=Marketing%2C+Streaming+%26+Digital+Media", {
+    const resp = await axios.get("https://www.umusiccareers.com/?category=Marketing%2C+Streaming+%26+Digital+Media", {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
+    const data = resp.data;
+    console.log(`UMG DEBUG: status=${resp.status}, html length=${data.length}`);
+    console.log(`UMG DEBUG: first 300 chars: ${data.substring(0, 300)}`);
     // UMG embeds jobs as a workdayPosts JSON array in the page source
     const match = data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\]);/);
     if (!match) {
-      console.log("UMG: could not find workdayPosts JSON in page");
+      // Try alternate patterns
+      const alt1 = data.match(/workdayPosts/);
+      const alt2 = data.match(/var\s+\w+Posts\s*=/);
+      const scriptTags = (data.match(/<script/g) || []).length;
+      console.log(`UMG DEBUG: workdayPosts not found. Contains "workdayPosts"=${!!alt1}, altVar=${!!alt2}, scriptTags=${scriptTags}`);
+      console.log(`UMG DEBUG: searching for JSON arrays in scripts...`);
+      // Look for any large JSON array in script tags
+      const jsonMatch = data.match(/=\s*(\[\s*\{[^]*?"title"[^]*?\}\s*\])\s*;/);
+      if (jsonMatch) {
+        console.log(`UMG DEBUG: found alternate JSON array, length=${jsonMatch[1].length}`);
+      }
       return [];
     }
+    console.log(`UMG DEBUG: found workdayPosts, raw length=${match[1].length}`);
     const posts = JSON.parse(match[1]);
+    console.log(`UMG DEBUG: parsed ${posts.length} posts. First title: "${posts[0]?.title}"`);
     const jobs = posts
       .filter((p) => p.title && p.title.length > 3)
       .map((p) => ({

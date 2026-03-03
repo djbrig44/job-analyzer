@@ -58,7 +58,7 @@ SCORING RULES:
 - 25-49 = Weak Match: Some music industry connection but wrong function or seniority.
 - Below 25 = No Match: Non-music roles (HR, design, admin, tech intern, warehouse, engineering). These should score very low.
 
-IMPORTANT: Weight heavily toward music industry + marketing alignment. A "Manager, Digital Marketing" at a music label like BMG should score 75+. A "Director of Marketing" at a major label should score 85+. Non-marketing roles at music companies (admin, HR, engineering) should score below 30. Non-music companies should score below 25 regardless of title.
+IMPORTANT: Weight heavily toward music industry + marketing alignment. A Manager or Director of Digital Marketing at a major music label (BMG, UMG, Sony, Warner, Interscope, Def Jam, Republic, Atlantic, Columbia) should score 85 or higher — these are exact-fit roles. A "Director of Marketing" or "VP Marketing" at any music company should score 90+. Marketing manager roles at music tech/streaming companies (Spotify, Apple Music, YouTube Music, SoundCloud, DistroKid, UnitedMasters) should score 75+. Non-marketing roles at music companies (admin, HR, engineering, design) should score below 30. Non-music companies should score below 25 regardless of title.
 
 Respond ONLY with valid JSON, no markdown:
 {
