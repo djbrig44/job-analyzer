@@ -239,20 +239,42 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
+// ─── Process-level error handlers (keep server alive) ────────────────────────
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (server staying alive):", err.message);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection (server staying alive):", reason);
+});
+
+// ─── Heartbeat (proves process is alive) ─────────────────────────────────────
+setInterval(() => {
+  console.log("💓 heartbeat", new Date().toISOString());
+}, 60000);
+
 // ─── Cron: scrape every 6 hours ───────────────────────────────────────────────
 cron.schedule("0 */6 * * *", () => {
   console.log("⏰ Cron: running scheduled scrape");
-  scrapeAllJobs();
+  scrapeAllJobs().catch((e) => console.error("Cron scrape error:", e.message));
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  // Run initial scrape if cache is empty or old
-  const cache = loadCache();
-  const age = cache.lastUpdated ? (Date.now() - new Date(cache.lastUpdated)) / 1000 / 60 / 60 : 999;
-  if (age > 6) {
-    console.log("Cache stale or empty — running initial scrape...");
-    scrapeAllJobs();
+
+  // Run initial scrape if cache is empty or old — wrapped in try/catch
+  try {
+    const cache = loadCache();
+    const age = cache.lastUpdated
+      ? (Date.now() - new Date(cache.lastUpdated)) / 1000 / 60 / 60
+      : 999;
+    if (age > 6) {
+      console.log("Cache stale or empty — running initial scrape...");
+      scrapeAllJobs().catch((e) =>
+        console.error("Initial scrape error (non-fatal):", e.message)
+      );
+    }
+  } catch (e) {
+    console.error("Startup scrape check error (non-fatal):", e.message);
   }
 });
