@@ -52,23 +52,12 @@ async function scrapeROSTR() {
 
 async function scrapeDoorsOpen() {
   try {
-    const resp = await axios.get("https://www.doorsopen.co/jobs/", {
+    const { data } = await axios.get("https://www.doorsopen.co/jobs/", {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
-    const data = resp.data;
-    console.log(`Doors Open DEBUG: status=${resp.status}, html length=${data.length}`);
-    console.log(`Doors Open DEBUG: first 300 chars: ${data.substring(0, 300)}`);
     const $ = cheerio.load(data);
-    // Try multiple selectors to find what matches
-    const articleCount = $("article").length;
-    const listingItemCount = $(".listing-item").length;
-    const articleListingCount = $("article.listing-item").length;
-    const mediaCount = $(".media").length;
-    const wellCount = $(".well").length;
-    console.log(`Doors Open DEBUG: article=${articleCount}, .listing-item=${listingItemCount}, article.listing-item=${articleListingCount}, .media=${mediaCount}, .well=${wellCount}`);
     const jobs = [];
-    // Try the broadest working selector
     $("article.listing-item, .listing-item, article.media").each((_, el) => {
       const titleEl = $(el).find(".listing-item__title a, h3 a, h4 a, .title a").first();
       const title = titleEl.text().trim();
@@ -80,13 +69,6 @@ async function scrapeDoorsOpen() {
         jobs.push({ title, company: company || "Unknown", location, url, source: "doorsopen", id: `do-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
       }
     });
-    if (jobs.length === 0) {
-      // Dump all article/li text for debugging
-      console.log("Doors Open DEBUG: 0 jobs found. Dumping first 3 article texts:");
-      $("article, .job, li").slice(0, 3).each((i, el) => {
-        console.log(`  [${i}] classes="${$(el).attr("class") || ""}" text="${$(el).text().trim().substring(0, 150)}"`);
-      });
-    }
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Doors Open: scraped ${unique.length} jobs`);
@@ -127,41 +109,26 @@ async function scrapeDigilogue() {
 
 async function scrapeUMG() {
   try {
-    const resp = await axios.get("https://www.umusiccareers.com/?category=Marketing%2C+Streaming+%26+Digital+Media", {
+    const { data } = await axios.get("https://www.umusiccareers.com/?category=Marketing%2C+Streaming+%26+Digital+Media", {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 15000,
     });
-    const data = resp.data;
-    console.log(`UMG DEBUG: status=${resp.status}, html length=${data.length}`);
     // Find the workdayPosts data — try multiple patterns
     let posts = null;
-    // Pattern 1: workdayPosts = [...]
-    const m1 = data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\])\s*;/);
-    // Pattern 2: "workdayPosts":[...] (as JSON key)
-    const m2 = data.match(/"workdayPosts"\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
-    // Pattern 3: greedy match — workdayPosts = [...] where ] is the LAST bracket
-    const m3 = data.match(/workdayPosts\s*=\s*(\[[\s\S]*\])\s*;/);
-    // Show 200 chars around the workdayPosts occurrence for debugging
-    const wpIdx = data.indexOf("workdayPosts");
-    if (wpIdx >= 0) {
-      console.log(`UMG DEBUG: context around workdayPosts: ...${data.substring(wpIdx, wpIdx + 300)}...`);
-    }
-    for (const [label, m] of [["pattern1", m1], ["pattern2", m2], ["pattern3", m3]]) {
+    const patterns = [
+      data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\])\s*;/),
+      data.match(/"workdayPosts"\s*:\s*(\[[\s\S]*?\])\s*[,}]/),
+      data.match(/workdayPosts\s*=\s*(\[[\s\S]*\])\s*;/),
+    ];
+    for (const m of patterns) {
       if (m) {
-        try {
-          posts = JSON.parse(m[1]);
-          console.log(`UMG DEBUG: ${label} matched, parsed ${posts.length} posts`);
-          break;
-        } catch (e) {
-          console.log(`UMG DEBUG: ${label} matched but JSON parse failed: ${e.message}`);
-        }
+        try { posts = JSON.parse(m[1]); break; } catch {}
       }
     }
     if (!posts || !Array.isArray(posts) || posts.length === 0) {
       console.log("UMG: could not extract job data from page");
       return [];
     }
-    console.log(`UMG DEBUG: first post title: "${posts[0]?.title}", location: "${posts[0]?.location}"`);
     const jobs = posts
       .filter((p) => p.title && p.title.length > 3)
       .map((p) => ({
@@ -276,20 +243,25 @@ cron.schedule("0 */6 * * *", () => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log("Waiting 30s before initial scrape to let Railway health check pass...");
 
-  // Run initial scrape if cache is empty or old — wrapped in try/catch
-  try {
-    const cache = loadCache();
-    const age = cache.lastUpdated
-      ? (Date.now() - new Date(cache.lastUpdated)) / 1000 / 60 / 60
-      : 999;
-    if (age > 6) {
-      console.log("Cache stale or empty — running initial scrape...");
-      scrapeAllJobs().catch((e) =>
-        console.error("Initial scrape error (non-fatal):", e.message)
-      );
+  // Delay scrape so Railway's health check can confirm the server is alive first
+  setTimeout(() => {
+    try {
+      const cache = loadCache();
+      const age = cache.lastUpdated
+        ? (Date.now() - new Date(cache.lastUpdated)) / 1000 / 60 / 60
+        : 999;
+      if (age > 6) {
+        console.log("Cache stale or empty — running initial scrape...");
+        scrapeAllJobs().catch((e) =>
+          console.error("Initial scrape error (non-fatal):", e.message)
+        );
+      } else {
+        console.log(`Cache is ${age.toFixed(1)}h old — skipping scrape.`);
+      }
+    } catch (e) {
+      console.error("Startup scrape check error (non-fatal):", e.message);
     }
-  } catch (e) {
-    console.error("Startup scrape check error (non-fatal):", e.message);
-  }
+  }, 30000);
 });
