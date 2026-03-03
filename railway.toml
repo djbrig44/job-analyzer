@@ -1,6 +1,12 @@
 [build]
 buildCommand = "npm install && npm run build"
 
+[build.nixpacksPlan]
+providers = ["node"]
+
+[build.nixpacksPlan.phases.setup]
+nixPkgs = ["chromium"]
+
 [deploy]
 startCommand = "node server/index.js"
 healthcheckPath = "/api/health"
