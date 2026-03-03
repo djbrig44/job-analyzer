@@ -2,10 +2,9 @@
   "name": "my-job-tracker",
   "private": true,
   "version": "0.0.0",
-  "type": "module",
   "scripts": {
     "dev": "concurrently \"node server/index.js\" \"vite\"",
-    "build": "cd client && npm run build && cp -r dist ../dist",
+    "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server/index.js"
