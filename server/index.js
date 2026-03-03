@@ -129,30 +129,39 @@ async function scrapeUMG() {
   try {
     const resp = await axios.get("https://www.umusiccareers.com/?category=Marketing%2C+Streaming+%26+Digital+Media", {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
-      timeout: 10000,
+      timeout: 15000,
     });
     const data = resp.data;
     console.log(`UMG DEBUG: status=${resp.status}, html length=${data.length}`);
-    console.log(`UMG DEBUG: first 300 chars: ${data.substring(0, 300)}`);
-    // UMG embeds jobs as a workdayPosts JSON array in the page source
-    const match = data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\]);/);
-    if (!match) {
-      // Try alternate patterns
-      const alt1 = data.match(/workdayPosts/);
-      const alt2 = data.match(/var\s+\w+Posts\s*=/);
-      const scriptTags = (data.match(/<script/g) || []).length;
-      console.log(`UMG DEBUG: workdayPosts not found. Contains "workdayPosts"=${!!alt1}, altVar=${!!alt2}, scriptTags=${scriptTags}`);
-      console.log(`UMG DEBUG: searching for JSON arrays in scripts...`);
-      // Look for any large JSON array in script tags
-      const jsonMatch = data.match(/=\s*(\[\s*\{[^]*?"title"[^]*?\}\s*\])\s*;/);
-      if (jsonMatch) {
-        console.log(`UMG DEBUG: found alternate JSON array, length=${jsonMatch[1].length}`);
+    // Find the workdayPosts data — try multiple patterns
+    let posts = null;
+    // Pattern 1: workdayPosts = [...]
+    const m1 = data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\])\s*;/);
+    // Pattern 2: "workdayPosts":[...] (as JSON key)
+    const m2 = data.match(/"workdayPosts"\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
+    // Pattern 3: greedy match — workdayPosts = [...] where ] is the LAST bracket
+    const m3 = data.match(/workdayPosts\s*=\s*(\[[\s\S]*\])\s*;/);
+    // Show 200 chars around the workdayPosts occurrence for debugging
+    const wpIdx = data.indexOf("workdayPosts");
+    if (wpIdx >= 0) {
+      console.log(`UMG DEBUG: context around workdayPosts: ...${data.substring(wpIdx, wpIdx + 300)}...`);
+    }
+    for (const [label, m] of [["pattern1", m1], ["pattern2", m2], ["pattern3", m3]]) {
+      if (m) {
+        try {
+          posts = JSON.parse(m[1]);
+          console.log(`UMG DEBUG: ${label} matched, parsed ${posts.length} posts`);
+          break;
+        } catch (e) {
+          console.log(`UMG DEBUG: ${label} matched but JSON parse failed: ${e.message}`);
+        }
       }
+    }
+    if (!posts || !Array.isArray(posts) || posts.length === 0) {
+      console.log("UMG: could not extract job data from page");
       return [];
     }
-    console.log(`UMG DEBUG: found workdayPosts, raw length=${match[1].length}`);
-    const posts = JSON.parse(match[1]);
-    console.log(`UMG DEBUG: parsed ${posts.length} posts. First title: "${posts[0]?.title}"`);
+    console.log(`UMG DEBUG: first post title: "${posts[0]?.title}", location: "${posts[0]?.location}"`);
     const jobs = posts
       .filter((p) => p.title && p.title.length > 3)
       .map((p) => ({
