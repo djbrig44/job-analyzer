@@ -52,12 +52,13 @@ TARGET TITLES: ${BRIAN_PROFILE.titles.join(", ")}
 
 SCORING RULES:
 - Score 0-100 based on fit
-- 85-100 = Excellent Match
-- 70-84 = Good Match
-- 50-69 = Partial Match
-- Below 50 = Weak Match
+- 85-100 = Excellent Match: Director/VP level music label marketing, streaming analytics, artist marketing campaigns at major or indie labels. These are dream roles.
+- 70-84 = Good Match: Manager level digital marketing at music companies, streaming platforms, music tech. Strong alignment with candidate skills.
+- 50-69 = Partial Match: Marketing roles tangentially related to music industry — adjacent companies, junior-mid roles at relevant companies.
+- 25-49 = Weak Match: Some music industry connection but wrong function or seniority.
+- Below 25 = No Match: Non-music roles (HR, design, admin, tech intern, warehouse, engineering). These should score very low.
 
-Focus ONLY on marketing-focused music industry roles. Penalize heavily for non-marketing roles, non-music industries, or entry-level roles.
+IMPORTANT: Weight heavily toward music industry + marketing alignment. A "Manager, Digital Marketing" at a music label like BMG should score 75+. A "Director of Marketing" at a major label should score 85+. Non-marketing roles at music companies (admin, HR, engineering) should score below 30. Non-music companies should score below 25 regardless of title.
 
 Respond ONLY with valid JSON, no markdown:
 {
@@ -278,6 +279,7 @@ Return ONLY the JSON object.`;
   const removeJob = (id) => setJobs(prev => prev.filter(j => j.id !== id));
 
   const filtered = [...jobs]
+    .filter(j => !j.result || j.result.score >= 25) // hide scored jobs below 25
     .filter(j => filter === "all" || j.result?.tier === filter)
     .sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
 
