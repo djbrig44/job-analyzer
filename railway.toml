@@ -1,16 +1,7 @@
 [build]
-buildCommand = "npm install && npm run build"
-
-[build.nixpacksPlan]
-providers = ["node"]
-
-[build.nixpacksPlan.phases.setup]
-nixPkgs = ["chromium"]
+buildCommand = "npm install && npx playwright install chromium && npm run build"
 
 [deploy]
 startCommand = "node server/index.js"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 120
-
-[[services]]
-internalPort = 8080

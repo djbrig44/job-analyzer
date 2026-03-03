@@ -6,8 +6,7 @@ const cheerio = require("cheerio");
 const cron = require("node-cron");
 const fs = require("fs");
 const path = require("path");
-const puppeteer = require("puppeteer-core");
-const chromium = require("@sparticuz/chromium");
+const { chromium: pwChromium } = require("playwright");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -41,11 +40,7 @@ function saveCache(data) {
 
 // ─── Headless Browser ─────────────────────────────────────────────────────────
 async function getBrowser() {
-  return puppeteer.launch({
-    headless: true,
-    args: chromium.args,
-    executablePath: await chromium.executablePath(),
-  });
+  return pwChromium.launch({ headless: true });
 }
 
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
@@ -53,10 +48,10 @@ async function scrapeMBW() {
   let browser = null;
   try {
     browser = await getBrowser();
-    const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    const context = await browser.newContext({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
+    const page = await context.newPage();
     await page.goto("https://www.musicbusinessworldwide.com/jobs/listings/", {
-      waitUntil: "networkidle2",
+      waitUntil: "networkidle",
       timeout: 20000,
     });
     try {
@@ -99,10 +94,10 @@ async function scrapeROSTR() {
   let browser = null;
   try {
     browser = await getBrowser();
-    const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    const context = await browser.newContext({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
+    const page = await context.newPage();
     await page.goto("https://jobs.rostr.cc/", {
-      waitUntil: "networkidle2",
+      waitUntil: "networkidle",
       timeout: 20000,
     });
     // Wait for Vue.js app to render job cards

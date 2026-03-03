@@ -10,7 +10,6 @@
     "start": "node server/index.js"
   },
   "dependencies": {
-    "@sparticuz/chromium": "^143.0.4",
     "axios": "^1.13.6",
     "cheerio": "^1.2.0",
     "concurrently": "^9.2.1",
@@ -18,7 +17,7 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "node-cron": "^4.2.1",
-    "puppeteer-core": "^24.37.5",
+    "playwright": "^1.58.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
