@@ -39,56 +39,15 @@ function saveCache(data) {
 
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
 async function scrapeMBW() {
-  try {
-    const { data } = await axios.get("https://www.musicbusinessworldwide.com/jobs/listings/", {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
-      timeout: 10000,
-    });
-    const $ = cheerio.load(data);
-    const jobs = [];
-    $(".job_listing").each((_, el) => {
-      const title = $(el).find(".position h3").text().trim();
-      const company = $(el).find(".company strong").text().trim();
-      const location = $(el).find(".location").text().trim();
-      const url = $(el).find("a").attr("href") || "";
-      if (title && company) {
-        jobs.push({ title, company, location, url, source: "mbw", id: `mbw-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
-      }
-    });
-    console.log(`MBW: scraped ${jobs.length} jobs`);
-    return jobs;
-  } catch (e) {
-    console.error("MBW scrape error:", e.message);
-    return [];
-  }
+  // MBW requires JavaScript rendering — static scrape not possible
+  console.log("MBW: skipped (JS-rendered, needs headless browser)");
+  return [];
 }
 
 async function scrapeROSTR() {
-  try {
-    const { data } = await axios.get("https://jobs.rostr.cc/", {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
-      timeout: 10000,
-    });
-    const $ = cheerio.load(data);
-    const jobs = [];
-    $("a[href*='/jobs/']").each((_, el) => {
-      const title = $(el).find("h2, h3, .title, [class*='title']").first().text().trim();
-      const company = $(el).find("[class*='company'], [class*='employer']").first().text().trim();
-      const location = $(el).find("[class*='location']").first().text().trim();
-      const url = "https://jobs.rostr.cc" + ($(el).attr("href") || "");
-      if (title && title.length > 3) {
-        jobs.push({ title, company: company || "Unknown", location, url, source: "rostr", id: `rostr-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
-      }
-    });
-    // Deduplicate by id
-    const seen = new Set();
-    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`ROSTR: scraped ${unique.length} jobs`);
-    return unique;
-  } catch (e) {
-    console.error("ROSTR scrape error:", e.message);
-    return [];
-  }
+  // ROSTR is a Vue.js SPA — static scrape not possible
+  console.log("ROSTR: skipped (Vue.js SPA, needs headless browser)");
+  return [];
 }
 
 async function scrapeDoorsOpen() {
@@ -99,12 +58,13 @@ async function scrapeDoorsOpen() {
     });
     const $ = cheerio.load(data);
     const jobs = [];
-    $(".listing-item, .job-listing, article").each((_, el) => {
-      const title = $(el).find("h2, h3, .title").first().text().trim();
-      const company = $(el).find(".company, .employer, [class*='company']").first().text().trim();
-      const location = $(el).find(".location, [class*='location']").first().text().trim();
-      const href = $(el).find("a").first().attr("href") || "";
+    $("article.listing-item").each((_, el) => {
+      const titleEl = $(el).find(".listing-item__title a").first();
+      const title = titleEl.text().trim();
+      const href = titleEl.attr("href") || "";
       const url = href.startsWith("http") ? href : "https://www.doorsopen.co" + href;
+      const company = $(el).find(".media-body .listing-item__info--item").first().text().trim();
+      const location = $(el).find(".listing-item__info--item").eq(1).text().trim();
       if (title && title.length > 3) {
         jobs.push({ title, company: company || "Unknown", location, url, source: "doorsopen", id: `do-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
       }
@@ -153,19 +113,25 @@ async function scrapeUMG() {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
-    const $ = cheerio.load(data);
-    const jobs = [];
-    $(".job, [class*='listing'], li").each((_, el) => {
-      const title = $(el).find("h3, h4, .title, [class*='title']").first().text().trim();
-      const location = $(el).find("[class*='location'], .location").first().text().trim();
-      const href = $(el).find("a").first().attr("href") || "";
-      const url = href.startsWith("http") ? href : "https://www.umusiccareers.com" + href;
-      if (title && title.length > 3) {
-        jobs.push({ title, company: "Universal Music Group", location, url, source: "umg", id: `umg-${Buffer.from(title+location).toString("base64").slice(0,12)}` });
-      }
-    });
+    // UMG embeds jobs as a workdayPosts JSON array in the page source
+    const match = data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\]);/);
+    if (!match) {
+      console.log("UMG: could not find workdayPosts JSON in page");
+      return [];
+    }
+    const posts = JSON.parse(match[1]);
+    const jobs = posts
+      .filter((p) => p.title && p.title.length > 3)
+      .map((p) => ({
+        title: p.title,
+        company: p.department || "Universal Music Group",
+        location: p.location || "",
+        url: p.externalApplyURL || "https://www.umusiccareers.com",
+        source: "umg",
+        id: `umg-${Buffer.from(p.title + (p.location || "")).toString("base64").slice(0, 12)}`,
+      }));
     const seen = new Set();
-    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    const unique = jobs.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`UMG: scraped ${unique.length} jobs`);
     return unique;
   } catch (e) {
@@ -181,9 +147,16 @@ async function scrapeAllJobs() {
     scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG()
   ]);
   const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg];
-  const cache = { jobs: allJobs, lastUpdated: new Date().toISOString() };
+  // Filter out junk CTA entries
+  const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
+  const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
+  // Keep only California jobs
+  const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
+  const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location));
+  console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
+  const cache = { jobs: caJobs, lastUpdated: new Date().toISOString() };
   saveCache(cache);
-  console.log(`✅ Total scraped: ${allJobs.length} jobs`);
+  console.log(`✅ Total saved: ${caJobs.length} CA jobs`);
   return cache;
 }
 
