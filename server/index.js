@@ -6,7 +6,7 @@ const cheerio = require("cheerio");
 const cron = require("node-cron");
 const fs = require("fs");
 const path = require("path");
-const { chromium: pwChromium } = require("playwright");
+
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -38,104 +38,15 @@ function saveCache(data) {
   }
 }
 
-// ─── Headless Browser ─────────────────────────────────────────────────────────
-async function getBrowser() {
-  return pwChromium.launch({ headless: true });
-}
-
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
 async function scrapeMBW() {
-  let browser = null;
-  try {
-    browser = await getBrowser();
-    const context = await browser.newContext({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
-    const page = await context.newPage();
-    await page.goto("https://www.musicbusinessworldwide.com/jobs/listings/", {
-      waitUntil: "networkidle",
-      timeout: 20000,
-    });
-    try {
-      await page.waitForSelector(".job_listing", { timeout: 15000 });
-    } catch {
-      console.log("MBW: .job_listing selector not found, dumping page preview...");
-      const html = await page.content();
-      console.log(`MBW DEBUG: html length=${html.length}, first 500 chars: ${html.substring(0, 500)}`);
-      return [];
-    }
-    const jobs = await page.evaluate(() => {
-      const results = [];
-      document.querySelectorAll(".job_listing").forEach((el) => {
-        const title = (el.querySelector(".position h3") || el.querySelector("h3"))?.textContent?.trim() || "";
-        const company = (el.querySelector(".company strong") || el.querySelector(".company"))?.textContent?.trim() || "";
-        const location = el.querySelector(".location")?.textContent?.trim() || "";
-        const url = el.querySelector("a")?.href || "";
-        if (title && company) {
-          results.push({ title, company, location, url, source: "mbw" });
-        }
-      });
-      return results;
-    });
-    // Add IDs
-    const withIds = jobs.map((j) => ({
-      ...j,
-      id: `mbw-${Buffer.from(j.title + j.company).toString("base64").slice(0, 12)}`,
-    }));
-    console.log(`MBW: scraped ${withIds.length} jobs`);
-    return withIds;
-  } catch (e) {
-    console.error("MBW scrape error:", e.message);
-    return [];
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+  console.log("MBW: skipped (requires headless browser - upgrade Railway plan to enable)");
+  return [];
 }
 
 async function scrapeROSTR() {
-  let browser = null;
-  try {
-    browser = await getBrowser();
-    const context = await browser.newContext({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
-    const page = await context.newPage();
-    await page.goto("https://jobs.rostr.cc/", {
-      waitUntil: "networkidle",
-      timeout: 20000,
-    });
-    // Wait for Vue.js app to render job cards
-    await new Promise((r) => setTimeout(r, 3000));
-    const jobs = await page.evaluate(() => {
-      const results = [];
-      // Try multiple selectors for job cards
-      const cards = document.querySelectorAll(".jobs li, [class*='job'] a, a[href*='/job/']");
-      cards.forEach((el) => {
-        const title = (el.querySelector(".position, h2, h3, [class*='title']") || el.querySelector("strong"))?.textContent?.trim() || "";
-        const company = (el.querySelector(".company-name, [class*='company']"))?.textContent?.trim() || "";
-        const location = (el.querySelector(".location-name, [class*='location']"))?.textContent?.trim() || "";
-        const url = el.href || el.querySelector("a")?.href || "";
-        if (title && title.length > 3) {
-          results.push({ title, company: company || "Unknown", location, url, source: "rostr" });
-        }
-      });
-      return results;
-    });
-    if (jobs.length === 0) {
-      const html = await page.content();
-      console.log(`ROSTR DEBUG: 0 jobs found. html length=${html.length}, first 500 chars: ${html.substring(0, 500)}`);
-    }
-    // Add IDs and deduplicate
-    const withIds = jobs.map((j) => ({
-      ...j,
-      id: `rostr-${Buffer.from(j.title + j.company).toString("base64").slice(0, 12)}`,
-    }));
-    const seen = new Set();
-    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`ROSTR: scraped ${unique.length} jobs`);
-    return unique;
-  } catch (e) {
-    console.error("ROSTR scrape error:", e.message);
-    return [];
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+  console.log("ROSTR: skipped (requires headless browser - upgrade Railway plan to enable)");
+  return [];
 }
 
 async function scrapeDoorsOpen() {
