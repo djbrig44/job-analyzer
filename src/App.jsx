@@ -35,6 +35,9 @@ const SOURCES = [
   { id: "wmg",       name: "Warner Music",       url: "https://wmg.wd1.myworkdayjobs.com/WMGUS/jobs",          color: "#FB5607" },
   { id: "sony",      name: "Sony Music",         url: "https://careers.sonymusic.com/",                        color: "#FFBE0B" },
   { id: "digilogue", name: "The Digilogue",      url: "https://www.thedigilogue.com/career-listings",          color: "#FF006E" },
+  { id: "concord",   name: "Concord",            url: "https://careers-concord.icims.com/jobs/search",          color: "#9B5DE5" },
+  { id: "bmg",       name: "BMG Careers",        url: "https://www.bmg.com/us/careers/",                       color: "#F15BB5" },
+  { id: "livenation",name: "Live Nation",         url: "https://www.livenationentertainment.com/careers/",      color: "#FEE440" },
   { id: "spotify",   name: "Spotify",            url: "https://www.lifeatspotify.com/jobs",                    color: "#1DB954" },
   { id: "apple",     name: "Apple Music",        url: "https://jobs.apple.com/en-us/search?product=apple-music-APPMU", color: "#A8A9AD" },
 ];

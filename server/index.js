@@ -148,13 +148,61 @@ async function scrapeUMG() {
   }
 }
 
+async function scrapeConcord() {
+  try {
+    const { data } = await axios.get("https://careers-concord.icims.com/jobs/search?ss=1&searchKeyword=marketing&in_iframe=1", {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
+      timeout: 10000,
+    });
+    const $ = cheerio.load(data);
+    const jobs = [];
+    $(".iCIMS_JobsTable a[href*='/jobs/']").each((_, el) => {
+      const title = $(el).text().trim();
+      const href = $(el).attr("href") || "";
+      const url = href.startsWith("http") ? href : "https://careers-concord.icims.com" + href;
+      // Get the parent row and find location
+      const row = $(el).closest("tr, .iCIMS_JobListingRow, div");
+      const location = row.find("[class*='location'], [class*='Location']").text().trim()
+        || row.text().match(/US-[A-Z]{2}-[\w\s]+/)?.[0] || "";
+      if (title && title.length > 3 && !title.match(/^ID\s/)) {
+        jobs.push({
+          title,
+          company: "Concord",
+          location: location.replace(/^US-/, "").replace(/-/g, ", "),
+          url: url.replace("&in_iframe=1", ""),
+          source: "concord",
+          id: `con-${Buffer.from(title).toString("base64").slice(0, 12)}`,
+        });
+      }
+    });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`Concord: scraped ${unique.length} jobs`);
+    return unique;
+  } catch (e) {
+    console.error("Concord scrape error:", e.message);
+    return [];
+  }
+}
+
+async function scrapeBMG() {
+  console.log("BMG: skipped (Next.js app, requires headless browser)");
+  return [];
+}
+
+async function scrapeLiveNation() {
+  console.log("Live Nation: skipped (Workday JS-rendered, requires headless browser)");
+  return [];
+}
+
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
 async function scrapeAllJobs() {
   console.log("🎵 Starting job scrape...", new Date().toISOString());
-  const [mbw, rostr, doorsOpen, digilogue, umg] = await Promise.all([
-    scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG()
+  const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation] = await Promise.all([
+    scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
+    scrapeConcord(), scrapeBMG(), scrapeLiveNation()
   ]);
-  const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg];
+  const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation];
   // Filter out junk CTA entries
   const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
   const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
