@@ -196,24 +196,35 @@ async function scrapeLiveNation() {
 }
 
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
+let _scrapeInProgress = false;
+
 async function scrapeAllJobs() {
-  console.log("🎵 Starting job scrape...", new Date().toISOString());
-  const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation] = await Promise.all([
-    scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
-    scrapeConcord(), scrapeBMG(), scrapeLiveNation()
-  ]);
-  const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation];
-  // Filter out junk CTA entries
-  const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
-  const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
-  // Keep only California jobs
-  const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
-  const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location));
-  console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
-  const cache = { jobs: caJobs, lastUpdated: new Date().toISOString() };
-  saveCache(cache);
-  console.log(`✅ Total saved: ${caJobs.length} CA jobs`);
-  return cache;
+  if (_scrapeInProgress) {
+    console.log("⏳ Scrape already in progress, skipping...");
+    return loadCache();
+  }
+  _scrapeInProgress = true;
+  try {
+    console.log("🎵 Starting job scrape...", new Date().toISOString());
+    const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation] = await Promise.all([
+      scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
+      scrapeConcord(), scrapeBMG(), scrapeLiveNation()
+    ]);
+    const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation];
+    // Filter out junk CTA entries
+    const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
+    const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
+    // Keep only California jobs
+    const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
+    const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location));
+    console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
+    const cache = { jobs: caJobs, lastUpdated: new Date().toISOString() };
+    saveCache(cache);
+    console.log(`✅ Total saved: ${caJobs.length} CA jobs`);
+    return cache;
+  } finally {
+    _scrapeInProgress = false;
+  }
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────

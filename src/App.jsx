@@ -195,12 +195,14 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filter, setFilter] = useState("all");
 
+  const relevantJobs = jobs.filter(j => !j.result || j.result.score >= 25);
+  const scoredRelevant = relevantJobs.filter(j => j.result);
   const stats = {
-    total: jobs.length,
+    total: relevantJobs.length,
     excellent: jobs.filter(j => j.result?.tier === "Excellent Match").length,
     good: jobs.filter(j => j.result?.tier === "Good Match").length,
-    avgScore: jobs.filter(j => j.result).length
-      ? Math.round(jobs.filter(j => j.result).reduce((a, b) => a + b.result.score, 0) / jobs.filter(j => j.result).length)
+    avgScore: scoredRelevant.length
+      ? Math.round(scoredRelevant.reduce((a, b) => a + b.result.score, 0) / scoredRelevant.length)
       : 0
   };
 
