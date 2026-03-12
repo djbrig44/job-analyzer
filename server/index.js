@@ -6,6 +6,14 @@ const cheerio = require("cheerio");
 const cron = require("node-cron");
 const fs = require("fs");
 const path = require("path");
+const { chromium: pwChromium } = require("playwright");
+
+async function getBrowser() {
+  return pwChromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+}
 
 
 const app = express();
@@ -186,13 +194,104 @@ async function scrapeConcord() {
 }
 
 async function scrapeBMG() {
-  console.log("BMG: skipped (Next.js app, requires headless browser)");
-  return [];
+  let browser = null;
+  try {
+    browser = await getBrowser();
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    });
+    const page = await context.newPage();
+    await page.goto("https://www.bmg.com/us/careers/", {
+      waitUntil: "networkidle",
+      timeout: 30000,
+    });
+    // Wait for job listings to render in the Next.js app
+    await page.waitForTimeout(5000);
+    const jobs = await page.evaluate(() => {
+      const results = [];
+      // Try common patterns for career listing pages
+      const cards = document.querySelectorAll(
+        "a[href*='career'], a[href*='job'], [class*='job'] a, [class*='career'] a, [class*='position'], [class*='listing'], li a[href*='greenhouse'], li a[href*='workday']"
+      );
+      cards.forEach((el) => {
+        const title = (el.querySelector("h2, h3, h4, [class*='title']") || el)?.textContent?.trim() || "";
+        const location = el.querySelector("[class*='location']")?.textContent?.trim() || "";
+        const url = el.href || "";
+        if (title && title.length > 3 && title.length < 200 && url.includes("http")) {
+          results.push({ title, location, url, source: "bmg" });
+        }
+      });
+      return results;
+    });
+    if (jobs.length === 0) {
+      const html = await page.content();
+      console.log(`BMG DEBUG: 0 jobs found. html length=${html.length}, first 500 chars: ${html.substring(0, 500)}`);
+    }
+    const withIds = jobs.map((j) => ({
+      ...j,
+      company: "BMG",
+      id: `bmg-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
+    }));
+    const seen = new Set();
+    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`BMG: scraped ${unique.length} jobs`);
+    return unique;
+  } catch (e) {
+    console.error("BMG scrape error:", e.message);
+    return [];
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 async function scrapeLiveNation() {
-  console.log("Live Nation: skipped (Workday JS-rendered, requires headless browser)");
-  return [];
+  let browser = null;
+  try {
+    browser = await getBrowser();
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    });
+    const page = await context.newPage();
+    await page.goto("https://www.livenationentertainment.com/careers/", {
+      waitUntil: "networkidle",
+      timeout: 30000,
+    });
+    await page.waitForTimeout(3000);
+    // Live Nation links to Workday portals — grab the regional job links and any listed positions
+    const jobs = await page.evaluate(() => {
+      const results = [];
+      const cards = document.querySelectorAll(
+        "a[href*='myworkdayjobs'], a[href*='careers'], [class*='job'] a, [class*='card'] a"
+      );
+      cards.forEach((el) => {
+        const title = (el.querySelector("h2, h3, h4, [class*='title'], span") || el)?.textContent?.trim() || "";
+        const location = el.querySelector("[class*='location']")?.textContent?.trim() || "";
+        const url = el.href || "";
+        if (title && title.length > 3 && title.length < 200 && url.includes("http")) {
+          results.push({ title, location, url, source: "livenation" });
+        }
+      });
+      return results;
+    });
+    if (jobs.length === 0) {
+      const html = await page.content();
+      console.log(`Live Nation DEBUG: 0 jobs found. html length=${html.length}, first 500 chars: ${html.substring(0, 500)}`);
+    }
+    const withIds = jobs.map((j) => ({
+      ...j,
+      company: "Live Nation",
+      id: `ln-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
+    }));
+    const seen = new Set();
+    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`Live Nation: scraped ${unique.length} jobs`);
+    return unique;
+  } catch (e) {
+    console.error("Live Nation scrape error:", e.message);
+    return [];
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
