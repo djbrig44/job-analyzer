@@ -113,30 +113,24 @@ async function scrapeROSTR() {
     }));
     console.log("ROSTR DEBUG url:", debugInfo.url, "title:", debugInfo.title);
     console.log("ROSTR DEBUG body:", debugInfo.bodyPreview.substring(0, 300));
-    // Debug: dump first 3 job elements
+    // Debug: dump first 3 job card elements
     const debugEls = await page.evaluate(() => {
-      const els = document.querySelectorAll(".job-box, .job-info, [class*='job'] a, li[class*='job']");
+      const els = document.querySelectorAll('a[href^="/job/"]');
       return Array.from(els).slice(0, 3).map(el => el.outerHTML.substring(0, 400));
     });
     console.log("ROSTR DEBUG elements:", JSON.stringify(debugEls));
-    const jobs = await page.evaluate(() => {
-      const results = [];
-      const cards = document.querySelectorAll(".job-box");
-      cards.forEach((el) => {
-        const titleEl = el.querySelector("h1.title, .title, h2, h3");
-        const title = titleEl ? titleEl.textContent.trim() : "";
-        const companyEl = el.querySelector(".company a, .company");
-        const company = companyEl ? companyEl.textContent.trim() : "";
-        const locEl = el.querySelector(".location, [class*='location']");
-        const location = locEl ? locEl.textContent.trim() : "";
-        const linkEl = el.querySelector("a[href*='/jobs/'], a[href*='/job/'], h1 a, .title a") || el.closest("a");
-        const url = linkEl?.href || "";
-        if (title && title.length > 3 && title.length < 200) {
-          results.push({ title, company: company || "Unknown", location, url: url || "https://jobs.rostr.cc/", source: "rostr" });
-        }
-      });
-      return results;
-    });
+    const jobs = [];
+    const jobCards = await page.$$('a[href^="/job/"]');
+    for (const card of jobCards) {
+      const title = await card.$eval(".position", el => el.textContent.trim()).catch(() => "");
+      const company = await card.$eval(".company", el => el.textContent.trim()).catch(() => "");
+      const location = await card.$eval(".location, .meta span:not(.position):not(.company)", el => el.textContent.trim()).catch(() => "");
+      const href = await card.getAttribute("href") || "";
+      const url = href.startsWith("http") ? href : `https://jobs.rostr.cc${href}`;
+      if (title && title.length > 3 && title.length < 200) {
+        jobs.push({ title, company: company || "Unknown", location, url, source: "rostr" });
+      }
+    }
     const withIds = jobs.map((j) => ({
       ...j,
       id: `ros-${Buffer.from(j.title + j.company).toString("base64").slice(0, 12)}`,
@@ -357,7 +351,7 @@ async function scrapeLiveNation() {
   try {
     browser = await getBrowser();
     const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     });
     const page = await context.newPage();
     // Workday SPA — go to /jobs endpoint, wait for React to hydrate
@@ -365,10 +359,11 @@ async function scrapeLiveNation() {
       waitUntil: "domcontentloaded",
       timeout: 45000,
     });
-    // Check for Workday maintenance redirect
+    // Check for Workday maintenance or error page
     const currentUrl = page.url();
-    if (currentUrl.includes("maintenance") || currentUrl.includes("community.workday.com")) {
-      console.log("Live Nation: Workday maintenance — skipping");
+    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
+    if (currentUrl.includes("maintenance") || currentUrl.includes("community.workday.com") || bodySnippet.includes("Oops, an error occurred")) {
+      console.log("Live Nation: Workday unavailable — skipping");
       await browser.close();
       return [];
     }
