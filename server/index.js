@@ -205,29 +205,52 @@ async function scrapeBMG() {
       waitUntil: "networkidle",
       timeout: 30000,
     });
-    // Wait for job listings to render in the Next.js app
     await page.waitForTimeout(5000);
+    // Debug: dump outerHTML of first 5 job-like elements so we can see the DOM structure
+    const debugEls = await page.evaluate(() => {
+      const els = document.querySelectorAll(
+        "a[href*='career'], a[href*='job'], [class*='job'] a, [class*='career'] a, [class*='position'], [class*='listing']"
+      );
+      return Array.from(els).slice(0, 8).map(el => ({
+        outerHTML: el.outerHTML.substring(0, 400),
+        children: Array.from(el.children).map(c => `<${c.tagName} class="${c.className}"> ${c.textContent?.trim().substring(0, 80)}`)
+      }));
+    });
+    console.log("BMG DEBUG elements:", JSON.stringify(debugEls, null, 2));
     const jobs = await page.evaluate(() => {
       const results = [];
-      // Try common patterns for career listing pages
       const cards = document.querySelectorAll(
         "a[href*='career'], a[href*='job'], [class*='job'] a, [class*='career'] a, [class*='position'], [class*='listing'], li a[href*='greenhouse'], li a[href*='workday']"
       );
       cards.forEach((el) => {
-        const title = (el.querySelector("h2, h3, h4, [class*='title']") || el)?.textContent?.trim() || "";
-        const location = el.querySelector("[class*='location']")?.textContent?.trim() || "";
+        // Try heading child first; skip if none found (likely a nav link)
+        const titleEl = el.querySelector("h2, h3, h4, [class*='title'], [class*='name']");
+        const title = titleEl ? titleEl.textContent.trim() : "";
+        const locEl = el.querySelector("[class*='location'], [class*='city'], [class*='place'], [class*='meta'] span, small");
+        const location = locEl ? locEl.textContent.trim() : "";
         const url = el.href || "";
-        if (title && title.length > 3 && title.length < 200 && url.includes("http")) {
+        if (title && title.length > 10 && title.length < 200 && url.includes("http")) {
           results.push({ title, location, url, source: "bmg" });
         }
       });
+      // Fallback: if no structured cards found, try parsing all link text
+      if (results.length === 0) {
+        const allLinks = document.querySelectorAll("a[href]");
+        allLinks.forEach((el) => {
+          const text = el.textContent?.trim() || "";
+          const url = el.href || "";
+          // Match pattern: "Job TitleCity, Country" — split on known city patterns
+          const cityMatch = text.match(/^(.{10,}?)((?:Los Angeles|New York|London|Berlin|Nashville|Miami|Atlanta|Sydney|Toronto|Paris|Hamburg|Munich|Seoul|Tokyo|Mexico City|São Paulo|Mumbai)[\s,].*)$/i);
+          if (cityMatch && url.includes("http")) {
+            results.push({ title: cityMatch[1].trim(), location: cityMatch[2].trim(), url, source: "bmg" });
+          }
+        });
+      }
       return results;
     });
-    if (jobs.length === 0) {
-      const html = await page.content();
-      console.log(`BMG DEBUG: 0 jobs found. html length=${html.length}, first 500 chars: ${html.substring(0, 500)}`);
-    }
-    const withIds = jobs.map((j) => ({
+    const junk = /^careers$|^here$|^apply|^learn more|^view|^see all|^back/i;
+    const filtered = jobs.filter(j => !junk.test(j.title));
+    const withIds = filtered.map((j) => ({
       ...j,
       company: "BMG",
       id: `bmg-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
@@ -252,32 +275,49 @@ async function scrapeLiveNation() {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     });
     const page = await context.newPage();
-    await page.goto("https://www.livenationentertainment.com/careers/", {
+    // Go to Workday portal directly (the actual job board)
+    await page.goto("https://livenation.wd1.myworkdayjobs.com/LNExternalSite", {
       waitUntil: "networkidle",
-      timeout: 30000,
+      timeout: 45000,
     });
-    await page.waitForTimeout(3000);
-    // Live Nation links to Workday portals — grab the regional job links and any listed positions
+    await page.waitForTimeout(5000);
+    // Debug: dump outerHTML of first 5 job-like elements
+    const debugEls = await page.evaluate(() => {
+      // Workday uses data-automation-id attributes and specific CSS classes
+      const els = document.querySelectorAll(
+        "[data-automation-id='jobTitle'], a[href*='/job/'], [class*='css-'] li a, section li a"
+      );
+      return Array.from(els).slice(0, 8).map(el => ({
+        outerHTML: el.outerHTML.substring(0, 400),
+        parentHTML: el.closest("li, tr, [role='listitem']")?.outerHTML?.substring(0, 500) || "no parent"
+      }));
+    });
+    console.log("LN DEBUG elements:", JSON.stringify(debugEls, null, 2));
     const jobs = await page.evaluate(() => {
       const results = [];
-      const cards = document.querySelectorAll(
-        "a[href*='myworkdayjobs'], a[href*='careers'], [class*='job'] a, [class*='card'] a"
-      );
-      cards.forEach((el) => {
-        const title = (el.querySelector("h2, h3, h4, [class*='title'], span") || el)?.textContent?.trim() || "";
-        const location = el.querySelector("[class*='location']")?.textContent?.trim() || "";
+      // Workday standard: job titles are links with data-automation-id="jobTitle"
+      const titleEls = document.querySelectorAll("[data-automation-id='jobTitle'], a[href*='/job/']");
+      titleEls.forEach((el) => {
+        const title = el.textContent?.trim() || "";
         const url = el.href || "";
-        if (title && title.length > 3 && title.length < 200 && url.includes("http")) {
-          results.push({ title, location, url, source: "livenation" });
+        // Find location in the parent list item or card
+        const card = el.closest("li, tr, [role='listitem'], [data-automation-id='compositeContainer']");
+        const locEl = card?.querySelector("[data-automation-id='locations'], [class*='location'], dd");
+        const location = locEl ? locEl.textContent.trim() : "";
+        if (title && title.length > 3 && title.length < 200) {
+          results.push({
+            title,
+            location,
+            url: url.startsWith("http") ? url : "https://livenation.wd1.myworkdayjobs.com" + url,
+            source: "livenation",
+          });
         }
       });
       return results;
     });
-    if (jobs.length === 0) {
-      const html = await page.content();
-      console.log(`Live Nation DEBUG: 0 jobs found. html length=${html.length}, first 500 chars: ${html.substring(0, 500)}`);
-    }
-    const withIds = jobs.map((j) => ({
+    const junk = /^search|^sign in|^view all|^back|^next|^previous/i;
+    const filtered = jobs.filter(j => !junk.test(j.title));
+    const withIds = filtered.map((j) => ({
       ...j,
       company: "Live Nation",
       id: `ln-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
