@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install dependencies first (better layer caching)
-COPY package*.json ./
-RUN npm ci --include=dev
+COPY package.json ./
+RUN npm install --include=dev
 
 # Install Playwright Chromium only
 RUN npx playwright install chromium
