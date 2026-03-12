@@ -310,11 +310,14 @@ async function scrapeAllJobs() {
       scrapeConcord(), scrapeBMG(), scrapeLiveNation()
     ]);
     const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation];
+    // Debug: log raw BMG and Live Nation jobs before filtering
+    if (bmg.length) console.log("BMG raw jobs:", bmg.map(j => `${j.title} | loc="${j.location}"`));
+    if (liveNation.length) console.log("LN raw jobs:", liveNation.map(j => `${j.title} | loc="${j.location}"`));
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
     // Keep only California jobs
-    const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
+    const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale|Remote|United States/i;
     const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location));
     console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
     const cache = { jobs: caJobs, lastUpdated: new Date().toISOString() };
