@@ -105,20 +105,6 @@ async function scrapeROSTR() {
       timeout: 45000,
     });
     await page.waitForTimeout(5000);
-    // Debug: log what rendered
-    const debugInfo = await page.evaluate(() => ({
-      url: document.location.href,
-      title: document.title,
-      bodyPreview: document.body.innerText.substring(0, 500),
-    }));
-    console.log("ROSTR DEBUG url:", debugInfo.url, "title:", debugInfo.title);
-    console.log("ROSTR DEBUG body:", debugInfo.bodyPreview.substring(0, 300));
-    // Debug: dump first 3 job card elements
-    const debugEls = await page.evaluate(() => {
-      const els = document.querySelectorAll('a[href^="/job/"]');
-      return Array.from(els).slice(0, 3).map(el => el.outerHTML.substring(0, 400));
-    });
-    console.log("ROSTR DEBUG elements:", JSON.stringify(debugEls));
     const jobs = [];
     const jobCards = await page.$$('a[href^="/job/"]');
     for (const card of jobCards) {
@@ -296,17 +282,6 @@ async function scrapeBMG() {
       timeout: 30000,
     });
     await page.waitForTimeout(5000);
-    // Debug: dump outerHTML of first 5 job-like elements so we can see the DOM structure
-    const debugEls = await page.evaluate(() => {
-      const els = document.querySelectorAll(
-        "a[href*='career'], a[href*='job'], [class*='job'] a, [class*='career'] a, [class*='position'], [class*='listing']"
-      );
-      return Array.from(els).slice(0, 8).map(el => ({
-        outerHTML: el.outerHTML.substring(0, 400),
-        children: Array.from(el.children).map(c => `<${c.tagName} class="${c.className}"> ${c.textContent?.trim().substring(0, 80)}`)
-      }));
-    });
-    console.log("BMG DEBUG elements:", JSON.stringify(debugEls, null, 2));
     const jobs = await page.evaluate(() => {
       const results = [];
       const cityPattern = /(?:Los Angeles|New York|Nashville|Berlin|London|Sydney|Toronto|Paris|Amsterdam|Stockholm|Hamburg|Munich|Copenhagen|Madrid|Milan|Seoul|Tokyo|São Paulo|Mexico City|Buenos Aires|Singapore|Melbourne|Miami|Atlanta|Chicago|Austin|Denver|Portland|Seattle|Phoenix|San Francisco|San Diego|San Jose|Sacramento)(,\s*[\w\s]+)?/i;
@@ -369,17 +344,6 @@ async function scrapeLiveNation() {
     }
     // Workday loads job list async after initial render — wait longer
     await page.waitForTimeout(10000);
-    // Debug: log where we landed and what rendered
-    const debugInfo = await page.evaluate(() => ({
-      url: document.location.href,
-      title: document.title,
-      bodyPreview: document.body.innerText.substring(0, 800),
-      allLinks: Array.from(document.querySelectorAll("a[href]")).slice(0, 20).map(a => `${a.textContent?.trim().substring(0, 60)} → ${a.href}`),
-    }));
-    console.log("LN DEBUG url:", debugInfo.url);
-    console.log("LN DEBUG title:", debugInfo.title);
-    console.log("LN DEBUG body:", debugInfo.bodyPreview.substring(0, 400));
-    console.log("LN DEBUG links:", JSON.stringify(debugInfo.allLinks.slice(0, 10)));
     const jobs = await page.evaluate(() => {
       const results = [];
       // Workday uses data-automation-id for structured elements
@@ -438,9 +402,6 @@ async function scrapeAllJobs() {
       scrapeConcord(), scrapeBMG(), scrapeLiveNation()
     ]);
     const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation];
-    // Debug: log raw BMG and Live Nation jobs before filtering
-    if (bmg.length) console.log("BMG raw jobs:", bmg.map(j => `${j.title} | loc="${j.location}"`));
-    if (liveNation.length) console.log("LN raw jobs:", liveNation.map(j => `${j.title} | loc="${j.location}"`));
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
