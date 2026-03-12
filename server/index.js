@@ -48,13 +48,109 @@ function saveCache(data) {
 
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
 async function scrapeMBW() {
-  console.log("MBW: skipped (requires headless browser - upgrade Railway plan to enable)");
-  return [];
+  try {
+    const { data } = await axios.get("https://www.musicbusinessworldwide.com/jobs/", {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const jobs = [];
+    $("ul li").each((_, el) => {
+      const titleEl = $(el).find("a strong").first();
+      if (!titleEl.length) return;
+      const title = titleEl.text().trim();
+      const href = titleEl.closest("a").attr("href") || "";
+      const url = href.startsWith("http") ? href : "https://www.musicbusinessworldwide.com" + href;
+      // Company and location are sibling <a> tags after the title link
+      const links = $(el).find("a");
+      let company = "";
+      let location = "";
+      links.each((i, link) => {
+        const text = $(link).text().trim();
+        const linkHref = $(link).attr("href") || "";
+        if (linkHref.includes("/company/")) company = text;
+        if (linkHref.includes("/location/") || linkHref.includes("/jobs/?location")) location = text;
+      });
+      if (title && title.length > 3) {
+        jobs.push({
+          title,
+          company: company || "Unknown",
+          location,
+          url,
+          source: "mbw",
+          id: `mbw-${Buffer.from(title + company).toString("base64").slice(0, 12)}`,
+        });
+      }
+    });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`MBW: scraped ${unique.length} jobs`);
+    return unique;
+  } catch (e) {
+    console.error("MBW scrape error:", e.message);
+    return [];
+  }
 }
 
 async function scrapeROSTR() {
-  console.log("ROSTR: skipped (requires headless browser - upgrade Railway plan to enable)");
-  return [];
+  let browser = null;
+  try {
+    browser = await getBrowser();
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    });
+    const page = await context.newPage();
+    await page.goto("https://jobs.rostr.cc/", {
+      waitUntil: "networkidle",
+      timeout: 45000,
+    });
+    await page.waitForTimeout(5000);
+    // Debug: log what rendered
+    const debugInfo = await page.evaluate(() => ({
+      url: document.location.href,
+      title: document.title,
+      bodyPreview: document.body.innerText.substring(0, 500),
+    }));
+    console.log("ROSTR DEBUG url:", debugInfo.url, "title:", debugInfo.title);
+    console.log("ROSTR DEBUG body:", debugInfo.bodyPreview.substring(0, 300));
+    // Debug: dump first 3 job elements
+    const debugEls = await page.evaluate(() => {
+      const els = document.querySelectorAll(".job-box, .job-info, [class*='job'] a, li[class*='job']");
+      return Array.from(els).slice(0, 3).map(el => el.outerHTML.substring(0, 400));
+    });
+    console.log("ROSTR DEBUG elements:", JSON.stringify(debugEls));
+    const jobs = await page.evaluate(() => {
+      const results = [];
+      const cards = document.querySelectorAll(".job-box");
+      cards.forEach((el) => {
+        const titleEl = el.querySelector("h1.title, .title, h2, h3");
+        const title = titleEl ? titleEl.textContent.trim() : "";
+        const companyEl = el.querySelector(".company a, .company");
+        const company = companyEl ? companyEl.textContent.trim() : "";
+        const locEl = el.querySelector(".location, [class*='location']");
+        const location = locEl ? locEl.textContent.trim() : "";
+        const linkEl = el.querySelector("a[href*='/jobs/'], a[href*='/job/'], h1 a, .title a") || el.closest("a");
+        const url = linkEl?.href || "";
+        if (title && title.length > 3 && title.length < 200) {
+          results.push({ title, company: company || "Unknown", location, url: url || "https://jobs.rostr.cc/", source: "rostr" });
+        }
+      });
+      return results;
+    });
+    const withIds = jobs.map((j) => ({
+      ...j,
+      id: `ros-${Buffer.from(j.title + j.company).toString("base64").slice(0, 12)}`,
+    }));
+    const seen = new Set();
+    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`ROSTR: scraped ${unique.length} jobs`);
+    return unique;
+  } catch (e) {
+    console.error("ROSTR scrape error:", e.message);
+    return [];
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 async function scrapeDoorsOpen() {
