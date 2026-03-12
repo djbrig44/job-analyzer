@@ -264,55 +264,45 @@ async function scrapeLiveNation() {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     });
     const page = await context.newPage();
-    // Try Live Nation careers search page
-    await page.goto("https://www.livenation.com/careers/search", {
-      waitUntil: "networkidle",
+    // Workday SPA — go to /jobs endpoint, wait for React to hydrate
+    await page.goto("https://livenation.wd1.myworkdayjobs.com/en-US/LNExternalSite", {
+      waitUntil: "domcontentloaded",
       timeout: 45000,
     });
-    await page.waitForTimeout(5000);
-    // Debug: log where we actually landed and what the page looks like
+    // Workday loads job list async after initial render — wait longer
+    await page.waitForTimeout(10000);
+    // Debug: log where we landed and what rendered
     const debugInfo = await page.evaluate(() => ({
       url: document.location.href,
       title: document.title,
-      bodyPreview: document.body.innerText.substring(0, 500),
+      bodyPreview: document.body.innerText.substring(0, 800),
+      allLinks: Array.from(document.querySelectorAll("a[href]")).slice(0, 20).map(a => `${a.textContent?.trim().substring(0, 60)} → ${a.href}`),
     }));
-    console.log("LN DEBUG page:", debugInfo.url, "title:", debugInfo.title);
-    console.log("LN DEBUG body preview:", debugInfo.bodyPreview.substring(0, 300));
-    // Debug: dump outerHTML of first 3 job-like elements
-    const debugEls = await page.evaluate(() => {
-      const els = document.querySelectorAll(
-        "[data-testid='job-card'], .job-listing, .job-card, li[class*='job'], a[href*='/job'], a[href*='workday'], [class*='position'], [class*='career'] li, [class*='opening']"
-      );
-      return Array.from(els).slice(0, 3).map(el => el.outerHTML.substring(0, 400));
-    });
-    console.log("LN DEBUG elements:", JSON.stringify(debugEls));
+    console.log("LN DEBUG url:", debugInfo.url);
+    console.log("LN DEBUG title:", debugInfo.title);
+    console.log("LN DEBUG body:", debugInfo.bodyPreview.substring(0, 400));
+    console.log("LN DEBUG links:", JSON.stringify(debugInfo.allLinks.slice(0, 10)));
     const jobs = await page.evaluate(() => {
       const results = [];
-      // Try multiple selector strategies
-      const cards = document.querySelectorAll(
-        "[data-testid='job-card'], .job-listing, .job-card, li[class*='job'], [class*='position'], [class*='opening'], [class*='career'] li a"
+      // Workday uses data-automation-id for structured elements
+      const titleEls = document.querySelectorAll(
+        "[data-automation-id='jobTitle'], a[href*='/job/'], [role='link'][data-automation-id]"
       );
-      cards.forEach((el) => {
-        const titleEl = el.querySelector("h2, h3, h4, [class*='title'], a") || el;
-        const title = titleEl.textContent?.trim() || "";
-        const locEl = el.querySelector("[class*='location']");
+      titleEls.forEach((el) => {
+        const title = el.textContent?.trim() || "";
+        const url = el.href || el.closest("a")?.href || "";
+        const card = el.closest("li, [role='listitem'], [data-automation-id='compositeContainer']");
+        const locEl = card?.querySelector("[data-automation-id='locations'], [data-automation-id='subtitle']");
         const location = locEl ? locEl.textContent.trim() : "";
-        const linkEl = el.tagName === "A" ? el : el.querySelector("a[href]");
-        const url = linkEl?.href || "";
         if (title && title.length > 5 && title.length < 200) {
-          results.push({ title, location, url: url || "https://www.livenation.com/careers/search", source: "livenation" });
+          results.push({
+            title,
+            location,
+            url: url.startsWith("http") ? url : "https://livenation.wd1.myworkdayjobs.com" + url,
+            source: "livenation",
+          });
         }
       });
-      // Fallback: try any links with /job/ in href
-      if (results.length === 0) {
-        document.querySelectorAll("a[href*='/job'], a[href*='workday']").forEach((el) => {
-          const title = el.textContent?.trim() || "";
-          const url = el.href || "";
-          if (title && title.length > 5 && title.length < 200) {
-            results.push({ title, location: "", url, source: "livenation" });
-          }
-        });
-      }
       return results;
     });
     const junk = /^search|^sign in|^view all|^back|^next|^previous/i;
