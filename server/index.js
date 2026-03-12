@@ -269,6 +269,13 @@ async function scrapeLiveNation() {
       waitUntil: "domcontentloaded",
       timeout: 45000,
     });
+    // Check for Workday maintenance redirect
+    const currentUrl = page.url();
+    if (currentUrl.includes("maintenance") || currentUrl.includes("community.workday.com")) {
+      console.log("Live Nation: Workday maintenance — skipping");
+      await browser.close();
+      return [];
+    }
     // Workday loads job list async after initial render — wait longer
     await page.waitForTimeout(10000);
     // Debug: log where we landed and what rendered
