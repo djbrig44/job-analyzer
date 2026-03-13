@@ -109,7 +109,22 @@ function Spinner() {
   );
 }
 
-function JobCard({ job, onRemove }) {
+const statusColors = { applied: "#00FF87", saved: "#3A86FF", dismissed: "#666" };
+const statusLabels = { applied: "APPLIED", saved: "SAVED", dismissed: "DISMISSED" };
+
+function StatusButton({ label, color, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "4px 12px", borderRadius: 4,
+      cursor: "pointer", transition: "all 0.2s",
+      background: active ? color + "22" : "transparent",
+      color: active ? color : "rgba(255,255,255,0.4)",
+      border: `1px solid ${active ? color + "66" : "rgba(255,255,255,0.1)"}`,
+    }}>{label}</button>
+  );
+}
+
+function JobCard({ job, onRemove, onStatusChange }) {
   const [expanded, setExpanded] = useState(false);
   const source = SOURCES.find(s => s.id === job.source);
   return (
@@ -135,7 +150,14 @@ function JobCard({ job, onRemove }) {
                 {job.result.tier}
               </span>
             )}
-            {job.auto && (
+            {job.status && (
+              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
+                color: statusColors[job.status], background: statusColors[job.status] + "18",
+                border: `1px solid ${statusColors[job.status]}33` }}>
+                {statusLabels[job.status]}
+              </span>
+            )}
+            {!job.status && job.auto && (
               <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
                 color: "rgba(255,255,255,0.3)", border: "1px solid rgba(255,255,255,0.1)" }}>AUTO</span>
             )}
@@ -157,7 +179,7 @@ function JobCard({ job, onRemove }) {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
             <div>
               <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#00FF87",
-                marginBottom: 6, letterSpacing: "0.08em" }}>✓ MATCHED SKILLS</div>
+                marginBottom: 6, letterSpacing: "0.08em" }}>MATCHED SKILLS</div>
               {job.result.matchedSkills?.map(s => (
                 <div key={s} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12,
                   color: "rgba(255,255,255,0.55)", padding: "2px 0" }}>· {s}</div>
@@ -165,21 +187,30 @@ function JobCard({ job, onRemove }) {
             </div>
             <div>
               <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#FF9F1C",
-                marginBottom: 6, letterSpacing: "0.08em" }}>⚠ GAPS</div>
+                marginBottom: 6, letterSpacing: "0.08em" }}>GAPS</div>
               {job.result.gaps?.length ? job.result.gaps.map(g => (
                 <div key={g} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12,
                   color: "rgba(255,255,255,0.55)", padding: "2px 0" }}>· {g}</div>
               )) : <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", fontFamily: "'DM Sans',sans-serif" }}>None identified</div>}
             </div>
           </div>
-          {job.url && (
-            <a href={job.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-              style={{ display: "inline-block", fontFamily: "'DM Mono',monospace", fontSize: 11,
-                color: "#2EC4B6", textDecoration: "none", padding: "6px 14px",
-                border: "1px solid #2EC4B633", borderRadius: 6, background: "#2EC4B611" }}>
-              View Posting →
-            </a>
-          )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {job.url && (
+              <a href={job.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                style={{ display: "inline-block", fontFamily: "'DM Mono',monospace", fontSize: 11,
+                  color: "#2EC4B6", textDecoration: "none", padding: "6px 14px",
+                  border: "1px solid #2EC4B633", borderRadius: 6, background: "#2EC4B611" }}>
+                View Posting
+              </a>
+            )}
+            <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+            <StatusButton label="Applied" color="#00FF87" active={job.status === "applied"}
+              onClick={e => { e.stopPropagation(); onStatusChange(job.id, job.status === "applied" ? null : "applied"); }} />
+            <StatusButton label="Saved" color="#3A86FF" active={job.status === "saved"}
+              onClick={e => { e.stopPropagation(); onStatusChange(job.id, job.status === "saved" ? null : "saved"); }} />
+            <StatusButton label="Dismiss" color="#666" active={job.status === "dismissed"}
+              onClick={e => { e.stopPropagation(); onStatusChange(job.id, job.status === "dismissed" ? null : "dismissed"); }} />
+          </div>
         </div>
       )}
     </div>
@@ -205,12 +236,14 @@ export default function App() {
     }).catch(() => {});
   }, []);
 
-  const relevantJobs = jobs.filter(j => !j.result || j.result.score >= 25);
+  const visibleJobs = jobs.filter(j => j.status !== "dismissed");
+  const relevantJobs = visibleJobs.filter(j => !j.result || j.result.score >= 25);
   const scoredRelevant = relevantJobs.filter(j => j.result);
   const stats = {
     total: relevantJobs.length,
-    excellent: jobs.filter(j => j.result?.tier === "Excellent Match").length,
-    good: jobs.filter(j => j.result?.tier === "Good Match").length,
+    excellent: visibleJobs.filter(j => j.result?.tier === "Excellent Match").length,
+    good: visibleJobs.filter(j => j.result?.tier === "Good Match").length,
+    applied: jobs.filter(j => j.status === "applied").length,
     avgScore: scoredRelevant.length
       ? Math.round(scoredRelevant.reduce((a, b) => a + b.result.score, 0) / scoredRelevant.length)
       : 0
@@ -272,9 +305,24 @@ Return ONLY the JSON object.`;
 
   const removeJob = (id) => setJobs(prev => prev.filter(j => j.id !== id));
 
+  const handleStatusChange = async (jobId, status) => {
+    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status } : j));
+    await fetch("/api/job-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId, status }),
+    });
+  };
+
   const filtered = [...jobs]
+    .filter(j => j.status !== "dismissed") // hide dismissed
     .filter(j => !j.result || j.result.score >= 25) // hide scored jobs below 25
-    .filter(j => filter === "all" || j.result?.tier === filter)
+    .filter(j => {
+      if (filter === "all") return true;
+      if (filter === "applied") return j.status === "applied";
+      if (filter === "saved") return j.status === "saved";
+      return j.result?.tier === filter;
+    })
     .sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
 
   const inputStyle = {
@@ -332,11 +380,12 @@ Return ONLY the JSON object.`;
             <div style={{ animation: "fadeIn 0.3s ease" }}>
 
               {/* Stats */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
                 {[
                   { label: "TOTAL", value: stats.total, color: "rgba(255,255,255,0.7)" },
                   { label: "EXCELLENT", value: stats.excellent, color: "#00FF87" },
                   { label: "GOOD MATCH", value: stats.good, color: "#2EC4B6" },
+                  { label: "APPLIED", value: stats.applied, color: "#00FF87" },
                   { label: "AVG SCORE", value: stats.avgScore || "—", color: "#FF9F1C" },
                 ].map(s => (
                   <div key={s.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
@@ -405,16 +454,31 @@ Return ONLY the JSON object.`;
 
               {/* Filter Bar */}
               {jobs.length > 0 && (
-                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                  {["all", "Excellent Match", "Good Match", "Partial Match", "Weak Match"].map(f => (
-                    <button key={f} onClick={() => setFilter(f)} style={{
+                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+                  {["all", "Excellent Match", "Good Match", "Partial Match", "Weak Match"].map(f => {
+                    const filterColor = tierColors[f] || "rgba(255,255,255,0.12)";
+                    return (
+                      <button key={f} onClick={() => setFilter(f)} style={{
+                        fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "6px 14px", borderRadius: 20,
+                        cursor: "pointer", border: "1px solid",
+                        background: filter === f ? filterColor + "22" : "transparent",
+                        borderColor: filter === f ? (tierColors[f] || "rgba(255,255,255,0.4)") : "rgba(255,255,255,0.1)",
+                        color: filter === f ? (tierColors[f] || "rgba(255,255,255,0.9)") : "rgba(255,255,255,0.4)"
+                      }}>
+                        {f === "all" ? `All (${visibleJobs.filter(j => !j.result || j.result.score >= 25).length})` : f}
+                      </button>
+                    );
+                  })}
+                  <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+                  {[{ key: "applied", label: "Applied", color: "#00FF87" }, { key: "saved", label: "Saved", color: "#3A86FF" }].map(f => (
+                    <button key={f.key} onClick={() => setFilter(f.key)} style={{
                       fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "6px 14px", borderRadius: 20,
                       cursor: "pointer", border: "1px solid",
-                      background: filter === f ? (tierColors[f] || "rgba(255,255,255,0.12)") + "22" : "transparent",
-                      borderColor: filter === f ? (tierColors[f] || "rgba(255,255,255,0.4)") : "rgba(255,255,255,0.1)",
-                      color: filter === f ? (tierColors[f] || "rgba(255,255,255,0.9)") : "rgba(255,255,255,0.4)"
+                      background: filter === f.key ? f.color + "22" : "transparent",
+                      borderColor: filter === f.key ? f.color : "rgba(255,255,255,0.1)",
+                      color: filter === f.key ? f.color : "rgba(255,255,255,0.4)"
                     }}>
-                      {f === "all" ? `All (${jobs.length})` : f}
+                      {f.label}
                     </button>
                   ))}
                 </div>
@@ -436,7 +500,7 @@ Return ONLY the JSON object.`;
                   <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "0.1em", marginBottom: 14 }}>
                     {filtered.length} JOB{filtered.length !== 1 ? "S" : ""} · SORTED BY MATCH SCORE
                   </div>
-                  {filtered.map(job => <JobCard key={job.id} job={job} onRemove={removeJob} />)}
+                  {filtered.map(job => <JobCard key={job.id} job={job} onRemove={removeJob} onStatusChange={handleStatusChange} />)}
                 </div>
               )}
             </div>
