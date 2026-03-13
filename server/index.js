@@ -190,6 +190,38 @@ async function scrapeDigilogue() {
   }
 }
 
+async function scrapeSony() {
+  try {
+    const { data } = await axios.get("https://boards-api.greenhouse.io/v1/boards/sonymusicentertainment/jobs", {
+      headers: { "Accept": "application/json" },
+      timeout: 15000,
+    });
+    const jobs = (data.jobs || [])
+      .filter(j => j.title && j.title.length > 3)
+      .map(j => {
+        const location = j.location?.name || "";
+        // Extract label from title suffix: "Director, Marketing - AWAL" → "AWAL"
+        const labelMatch = j.title.match(/\s*-\s*([A-Za-z\s&']+)$/);
+        const company = labelMatch ? `Sony Music / ${labelMatch[1].trim()}` : "Sony Music Entertainment";
+        return {
+          title: j.title,
+          company,
+          location: location.replace(/^United States,?\s*/i, "").replace(/,?\s*Remote$/i, ", Remote").trim(),
+          url: j.absolute_url || "https://job-boards.greenhouse.io/sonymusicentertainment",
+          source: "sony",
+          id: `sony-${Buffer.from(j.title + location).toString("base64").slice(0, 12)}`,
+        };
+      });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`Sony Music: ${unique.length} jobs via Greenhouse API`);
+    return unique;
+  } catch (e) {
+    console.error("Sony Music Greenhouse API error:", e.message);
+    return [];
+  }
+}
+
 // ─── Shared Workday CXS API scraper (paginated) ─────────────────────────────
 async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix }) {
   const LIMIT = 20;
@@ -443,11 +475,11 @@ async function scrapeAllJobs() {
   _scrapeInProgress = true;
   try {
     console.log("🎵 Starting job scrape...", new Date().toISOString());
-    const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation, wmg] = await Promise.all([
+    const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation, wmg, sony] = await Promise.all([
       scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
-      scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG()
+      scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG(), scrapeSony()
     ]);
-    const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation, ...wmg];
+    const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation, ...wmg, ...sony];
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
