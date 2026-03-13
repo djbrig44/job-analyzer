@@ -195,6 +195,16 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filter, setFilter] = useState("all");
 
+  // Load cached/scored jobs on mount
+  useEffect(() => {
+    fetch("/api/jobs").then(r => r.json()).then(cache => {
+      if (cache.jobs?.length) {
+        setJobs(cache.jobs.map(j => ({ ...j, auto: true })));
+        setLastUpdated(cache.lastUpdated);
+      }
+    }).catch(() => {});
+  }, []);
+
   const relevantJobs = jobs.filter(j => !j.result || j.result.score >= 25);
   const scoredRelevant = relevantJobs.filter(j => j.result);
   const stats = {
@@ -243,37 +253,16 @@ Return ONLY the JSON object.`;
 
   const handleFetchJobs = async () => {
     setScraping(true);
-    setScrapeStatus("Scraping job boards...");
+    setScrapeStatus("Scraping job boards & scoring with full JDs...");
     try {
       const res = await fetch("/api/scrape", { method: "POST" });
       const data = await res.json();
-      setScrapeStatus(`Found ${data.count} jobs. Scoring against your resume...`);
-      // Load the scraped jobs
+      // Reload scored jobs from server cache
       const cacheRes = await fetch("/api/jobs");
       const cache = await cacheRes.json();
       setLastUpdated(cache.lastUpdated);
-      // Only add jobs not already tracked
-      const existingIds = new Set(jobs.map(j => j.id));
-      const newJobs = cache.jobs
-        .filter(j => !existingIds.has(j.id))
-        .map(j => ({ ...j, result: null, auto: true }));
-      if (newJobs.length === 0) {
-        setScrapeStatus("No new jobs found since last check.");
-        setScraping(false);
-        return;
-      }
-      setJobs(prev => [...newJobs, ...prev]);
-      setScrapeStatus(`Analyzing ${newJobs.length} new jobs...`);
-      // Analyze in batches of 3
-      for (let i = 0; i < newJobs.length; i += 3) {
-        const batch = newJobs.slice(i, i + 3);
-        await Promise.all(batch.map(async (job) => {
-          const result = await analyzeJob(job);
-          setJobs(prev => prev.map(j => j.id === job.id ? { ...j, result } : j));
-        }));
-        setScrapeStatus(`Analyzed ${Math.min(i + 3, newJobs.length)} / ${newJobs.length} jobs...`);
-      }
-      setScrapeStatus(`✅ Done! ${newJobs.length} new jobs scored.`);
+      setJobs(cache.jobs.map(j => ({ ...j, auto: true })));
+      setScrapeStatus(`✅ Done! ${data.count} jobs found, ${data.scored} scored.`);
     } catch (e) {
       setScrapeStatus("❌ Scrape failed — is the server running?");
     }
