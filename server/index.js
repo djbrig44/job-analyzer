@@ -344,6 +344,13 @@ async function scrapeLiveNation() {
     }
     // Workday loads job list async after initial render — wait longer
     await page.waitForTimeout(10000);
+    // Debug: see what LN Workday actually rendered
+    const lnDebug = await page.evaluate(() => ({
+      url: document.location.href,
+      title: document.title,
+      body: document.body.innerText.substring(0, 400),
+    }));
+    console.log("LN DEBUG:", lnDebug.url, "|", lnDebug.title, "|", lnDebug.body.substring(0, 200));
     const jobs = await page.evaluate(() => {
       const results = [];
       // Workday uses data-automation-id for structured elements
@@ -417,7 +424,9 @@ async function scrapeWMG() {
         const url = el.href || el.closest("a")?.href || "";
         const card = el.closest("li, [role='listitem'], [data-automation-id='compositeContainer']");
         const locEl = card?.querySelector("[data-automation-id='locations'], [data-automation-id='subtitle']");
-        const location = locEl ? locEl.textContent.trim() : "";
+        let location = locEl ? locEl.textContent.trim() : "";
+        // Clean Workday location: "locationsUSA - Los Angeles - 777 S. Santa Fe Ave" → "Los Angeles"
+        location = location.replace(/^locations/i, "").replace(/USA\s*-\s*/i, "").replace(/\s*-\s*\d+.*$/, "").trim();
         if (title && title.length > 5 && title.length < 200) {
           results.push({
             title,
