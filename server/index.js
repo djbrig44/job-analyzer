@@ -386,6 +386,68 @@ async function scrapeLiveNation() {
   }
 }
 
+async function scrapeWMG() {
+  let browser = null;
+  try {
+    browser = await getBrowser();
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    });
+    const page = await context.newPage();
+    await page.goto("https://wmg.wd1.myworkdayjobs.com/en-US/WMGUS", {
+      waitUntil: "domcontentloaded",
+      timeout: 45000,
+    });
+    // Check for Workday maintenance or error page
+    const currentUrl = page.url();
+    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
+    if (currentUrl.includes("maintenance") || currentUrl.includes("community.workday.com") || bodySnippet.includes("Oops, an error occurred")) {
+      console.log("WMG: Workday unavailable — skipping");
+      await browser.close();
+      return [];
+    }
+    await page.waitForTimeout(10000);
+    const jobs = await page.evaluate(() => {
+      const results = [];
+      const titleEls = document.querySelectorAll(
+        "[data-automation-id='jobTitle'], a[href*='/job/'], [role='link'][data-automation-id]"
+      );
+      titleEls.forEach((el) => {
+        const title = el.textContent?.trim() || "";
+        const url = el.href || el.closest("a")?.href || "";
+        const card = el.closest("li, [role='listitem'], [data-automation-id='compositeContainer']");
+        const locEl = card?.querySelector("[data-automation-id='locations'], [data-automation-id='subtitle']");
+        const location = locEl ? locEl.textContent.trim() : "";
+        if (title && title.length > 5 && title.length < 200) {
+          results.push({
+            title,
+            location,
+            url: url.startsWith("http") ? url : "https://wmg.wd1.myworkdayjobs.com" + url,
+            source: "wmg",
+          });
+        }
+      });
+      return results;
+    });
+    const junk = /^search|^sign in|^view all|^back|^next|^previous/i;
+    const filtered = jobs.filter(j => !junk.test(j.title));
+    const withIds = filtered.map((j) => ({
+      ...j,
+      company: "Warner Music Group",
+      id: `wmg-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
+    }));
+    const seen = new Set();
+    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`WMG: scraped ${unique.length} jobs`);
+    return unique;
+  } catch (e) {
+    console.error("WMG scrape error:", e.message);
+    return [];
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
 // ─── JD Fetching & Scoring ────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are a music industry recruiter AI scoring job postings against a candidate profile.
 
@@ -476,11 +538,11 @@ async function scrapeAllJobs() {
   _scrapeInProgress = true;
   try {
     console.log("🎵 Starting job scrape...", new Date().toISOString());
-    const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation] = await Promise.all([
+    const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation, wmg] = await Promise.all([
       scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
-      scrapeConcord(), scrapeBMG(), scrapeLiveNation()
+      scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG()
     ]);
-    const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation];
+    const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation, ...wmg];
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
