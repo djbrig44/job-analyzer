@@ -483,9 +483,10 @@ async function scrapeAllJobs() {
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
-    // Keep only California jobs
+    // Keep only California jobs — exclude Canadian "XX, CA" (province, country) false positives
     const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale|Remote|United States/i;
-    const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location));
+    const canadaPattern = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
+    const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location) && !canadaPattern.test(j.location));
     console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
 
     // Preserve existing scores from cache
