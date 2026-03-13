@@ -190,46 +190,62 @@ async function scrapeDigilogue() {
   }
 }
 
-async function scrapeUMG() {
+// ─── Shared Workday CXS API scraper (paginated) ─────────────────────────────
+async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix }) {
+  const LIMIT = 20;
+  let offset = 0;
+  let total = 0;
+  const allJobs = [];
   try {
-    const { data } = await axios.get("https://www.umusiccareers.com/?category=Marketing%2C+Streaming+%26+Digital+Media", {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
-      timeout: 15000,
-    });
-    // Find the workdayPosts data — try multiple patterns
-    let posts = null;
-    const patterns = [
-      data.match(/workdayPosts\s*=\s*(\[[\s\S]*?\])\s*;/),
-      data.match(/"workdayPosts"\s*:\s*(\[[\s\S]*?\])\s*[,}]/),
-      data.match(/workdayPosts\s*=\s*(\[[\s\S]*\])\s*;/),
-    ];
-    for (const m of patterns) {
-      if (m) {
-        try { posts = JSON.parse(m[1]); break; } catch {}
+    while (true) {
+      const { data } = await axios.post(apiUrl, {
+        limit: LIMIT, offset, appliedFacets: {}, searchText: "",
+      }, {
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        timeout: 15000,
+      });
+      if (offset === 0) total = data.total || 0;
+      const postings = data.jobPostings || [];
+      for (const p of postings) {
+        const title = p.title || "";
+        let location = p.locationsText || "";
+        // Clean Workday location formats:
+        // "USA - Los Angeles - 777 S. Santa Fe Ave" → "Los Angeles"
+        // "Los Angeles, CA, USA" → "Los Angeles, CA, USA"
+        location = location
+          .replace(/^locations?/i, "")
+          .replace(/USA\s*-\s*/i, "")
+          .replace(/\s*-\s*\d+.*$/, "")
+          .trim();
+        const extPath = p.externalPath || "";
+        const url = extPath ? `${portalBase}${extPath}` : portalBase;
+        if (title && title.length > 5) {
+          allJobs.push({
+            title, company, location, url, source,
+            id: `${idPrefix}-${Buffer.from(title + location).toString("base64").slice(0, 12)}`,
+          });
+        }
       }
+      offset += LIMIT;
+      if (postings.length < LIMIT || offset >= total) break;
+      await new Promise(r => setTimeout(r, 300));
     }
-    if (!posts || !Array.isArray(posts) || posts.length === 0) {
-      console.log("UMG: could not extract job data from page");
-      return [];
-    }
-    const jobs = posts
-      .filter((p) => p.title && p.title.length > 3)
-      .map((p) => ({
-        title: p.title,
-        company: p.department || "Universal Music Group",
-        location: p.location || "",
-        url: p.externalApplyURL || "https://www.umusiccareers.com",
-        source: "umg",
-        id: `umg-${Buffer.from(p.title + (p.location || "")).toString("base64").slice(0, 12)}`,
-      }));
     const seen = new Set();
-    const unique = jobs.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`UMG: scraped ${unique.length} jobs`);
+    const unique = allJobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`${company}: ${unique.length} jobs via Workday API (${total} total in portal)`);
     return unique;
   } catch (e) {
-    console.error("UMG scrape error:", e.message);
+    console.error(`${company} Workday API error:`, e.message);
     return [];
   }
+}
+
+async function scrapeUMG() {
+  return scrapeWorkdayAPI({
+    apiUrl: "https://umusic.wd5.myworkdayjobs.com/wday/cxs/umusic/UMGUS/jobs",
+    portalBase: "https://umusic.wd5.myworkdayjobs.com",
+    source: "umg", company: "Universal Music Group", idPrefix: "umg",
+  });
 }
 
 async function scrapeConcord() {
@@ -322,139 +338,19 @@ async function scrapeBMG() {
 }
 
 async function scrapeLiveNation() {
-  let browser = null;
-  try {
-    browser = await getBrowser();
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    });
-    const page = await context.newPage();
-    // Workday SPA — go to /jobs endpoint, wait for React to hydrate
-    await page.goto("https://livenation.wd1.myworkdayjobs.com/en-US/LNExternalSite", {
-      waitUntil: "domcontentloaded",
-      timeout: 45000,
-    });
-    // Check for Workday maintenance or error page
-    const currentUrl = page.url();
-    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
-    if (currentUrl.includes("maintenance") || currentUrl.includes("community.workday.com") || bodySnippet.includes("Oops, an error occurred")) {
-      console.log("Live Nation: Workday unavailable — skipping");
-      await browser.close();
-      return [];
-    }
-    // Workday loads job list async after initial render — wait longer
-    await page.waitForTimeout(10000);
-    // Debug: see what LN Workday actually rendered
-    const lnDebug = await page.evaluate(() => ({
-      url: document.location.href,
-      title: document.title,
-      body: document.body.innerText.substring(0, 400),
-    }));
-    console.log("LN DEBUG:", lnDebug.url, "|", lnDebug.title, "|", lnDebug.body.substring(0, 200));
-    const jobs = await page.evaluate(() => {
-      const results = [];
-      // Workday uses data-automation-id for structured elements
-      const titleEls = document.querySelectorAll(
-        "[data-automation-id='jobTitle'], a[href*='/job/'], [role='link'][data-automation-id]"
-      );
-      titleEls.forEach((el) => {
-        const title = el.textContent?.trim() || "";
-        const url = el.href || el.closest("a")?.href || "";
-        const card = el.closest("li, [role='listitem'], [data-automation-id='compositeContainer']");
-        const locEl = card?.querySelector("[data-automation-id='locations'], [data-automation-id='subtitle']");
-        const location = locEl ? locEl.textContent.trim() : "";
-        if (title && title.length > 5 && title.length < 200) {
-          results.push({
-            title,
-            location,
-            url: url.startsWith("http") ? url : "https://livenation.wd1.myworkdayjobs.com" + url,
-            source: "livenation",
-          });
-        }
-      });
-      return results;
-    });
-    const junk = /^search|^sign in|^view all|^back|^next|^previous/i;
-    const filtered = jobs.filter(j => !junk.test(j.title));
-    const withIds = filtered.map((j) => ({
-      ...j,
-      company: "Live Nation",
-      id: `ln-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
-    }));
-    const seen = new Set();
-    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`Live Nation: scraped ${unique.length} jobs`);
-    return unique;
-  } catch (e) {
-    console.error("Live Nation scrape error:", e.message);
-    return [];
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+  return scrapeWorkdayAPI({
+    apiUrl: "https://livenation.wd503.myworkdayjobs.com/wday/cxs/livenation/LNExternalSite/jobs",
+    portalBase: "https://livenation.wd503.myworkdayjobs.com",
+    source: "livenation", company: "Live Nation", idPrefix: "ln",
+  });
 }
 
 async function scrapeWMG() {
-  let browser = null;
-  try {
-    browser = await getBrowser();
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    });
-    const page = await context.newPage();
-    await page.goto("https://wmg.wd1.myworkdayjobs.com/en-US/WMGUS", {
-      waitUntil: "domcontentloaded",
-      timeout: 45000,
-    });
-    // Check for Workday maintenance or error page
-    const currentUrl = page.url();
-    const bodySnippet = await page.evaluate(() => document.body.innerText.substring(0, 200));
-    if (currentUrl.includes("maintenance") || currentUrl.includes("community.workday.com") || bodySnippet.includes("Oops, an error occurred")) {
-      console.log("WMG: Workday unavailable — skipping");
-      await browser.close();
-      return [];
-    }
-    await page.waitForTimeout(10000);
-    const jobs = await page.evaluate(() => {
-      const results = [];
-      const titleEls = document.querySelectorAll(
-        "[data-automation-id='jobTitle'], a[href*='/job/'], [role='link'][data-automation-id]"
-      );
-      titleEls.forEach((el) => {
-        const title = el.textContent?.trim() || "";
-        const url = el.href || el.closest("a")?.href || "";
-        const card = el.closest("li, [role='listitem'], [data-automation-id='compositeContainer']");
-        const locEl = card?.querySelector("[data-automation-id='locations'], [data-automation-id='subtitle']");
-        let location = locEl ? locEl.textContent.trim() : "";
-        // Clean Workday location: "locationsUSA - Los Angeles - 777 S. Santa Fe Ave" → "Los Angeles"
-        location = location.replace(/^locations/i, "").replace(/USA\s*-\s*/i, "").replace(/\s*-\s*\d+.*$/, "").trim();
-        if (title && title.length > 5 && title.length < 200) {
-          results.push({
-            title,
-            location,
-            url: url.startsWith("http") ? url : "https://wmg.wd1.myworkdayjobs.com" + url,
-            source: "wmg",
-          });
-        }
-      });
-      return results;
-    });
-    const junk = /^search|^sign in|^view all|^back|^next|^previous/i;
-    const filtered = jobs.filter(j => !junk.test(j.title));
-    const withIds = filtered.map((j) => ({
-      ...j,
-      company: "Warner Music Group",
-      id: `wmg-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
-    }));
-    const seen = new Set();
-    const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`WMG: scraped ${unique.length} jobs`);
-    return unique;
-  } catch (e) {
-    console.error("WMG scrape error:", e.message);
-    return [];
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+  return scrapeWorkdayAPI({
+    apiUrl: "https://wmg.wd1.myworkdayjobs.com/wday/cxs/wmg/WMGUS/jobs",
+    portalBase: "https://wmg.wd1.myworkdayjobs.com",
+    source: "wmg", company: "Warner Music Group", idPrefix: "wmg",
+  });
 }
 
 // ─── JD Fetching & Scoring ────────────────────────────────────────────────────
@@ -564,7 +460,7 @@ async function scrapeAllJobs() {
     const existingCache = loadCache();
     const scoredMap = new Map();
     for (const j of existingCache.jobs || []) {
-      if (j.result) scoredMap.set(j.id, { description: j.description, result: j.result });
+      if (j.result || j.status) scoredMap.set(j.id, { description: j.description, result: j.result, status: j.status });
     }
 
     // Identify new/unscored jobs
@@ -573,7 +469,7 @@ async function scrapeAllJobs() {
     for (const job of caJobs) {
       const existing = scoredMap.get(job.id);
       if (existing) {
-        enrichedJobs.push({ ...job, description: existing.description, result: existing.result });
+        enrichedJobs.push({ ...job, description: existing.description, result: existing.result, status: existing.status });
       } else {
         enrichedJobs.push(job);
         toScore.push(job);
@@ -653,6 +549,17 @@ app.post("/api/scrape", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Update job pipeline status
+app.post("/api/job-status", (req, res) => {
+  const { jobId, status } = req.body;
+  const cache = loadCache();
+  const job = cache.jobs.find(j => j.id === jobId);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  job.status = status || null;
+  saveCache(cache);
+  res.json({ success: true });
 });
 
 // Health check
