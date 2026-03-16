@@ -223,49 +223,54 @@ async function scrapeSony() {
 }
 
 // ─── Shared Workday CXS API scraper (paginated) ─────────────────────────────
-async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix }) {
+async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix, searchTerms }) {
   const LIMIT = 20;
-  let offset = 0;
-  let total = 0;
   const allJobs = [];
+  const seenIds = new Set();
+  // Run blank search + any supplementary keyword searches
+  const searches = ["", ...(searchTerms || [])];
   try {
-    while (true) {
-      const { data } = await axios.post(apiUrl, {
-        limit: LIMIT, offset, appliedFacets: {}, searchText: "",
-      }, {
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        timeout: 15000,
-      });
-      if (offset === 0) total = data.total || 0;
-      const postings = data.jobPostings || [];
-      for (const p of postings) {
-        const title = p.title || "";
-        let location = p.locationsText || "";
-        // Clean Workday location formats:
-        // "USA - Los Angeles - 777 S. Santa Fe Ave" → "Los Angeles"
-        // "Los Angeles, CA, USA" → "Los Angeles, CA, USA"
-        location = location
-          .replace(/^locations?/i, "")
-          .replace(/USA\s*-\s*/i, "")
-          .replace(/\s*-\s*\d+.*$/, "")
-          .trim();
-        const extPath = p.externalPath || "";
-        const url = extPath ? `${portalBase}${extPath}` : portalBase;
-        if (title && title.length > 5) {
-          allJobs.push({
-            title, company, location, url, source,
-            id: `${idPrefix}-${Buffer.from(title + location).toString("base64").slice(0, 12)}`,
-          });
+    for (const searchText of searches) {
+      let offset = 0;
+      let total = 0;
+      while (true) {
+        const { data } = await axios.post(apiUrl, {
+          limit: LIMIT, offset, appliedFacets: {}, searchText,
+        }, {
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+          timeout: 15000,
+        });
+        if (offset === 0) total = data.total || 0;
+        const postings = data.jobPostings || [];
+        for (const p of postings) {
+          const title = p.title || "";
+          let location = p.locationsText || "";
+          location = location
+            .replace(/^locations?/i, "")
+            .replace(/USA\s*-\s*/i, "")
+            .replace(/\s*-\s*\d+.*$/, "")
+            .trim();
+          const extPath = p.externalPath || "";
+          const url = extPath ? `${portalBase}${extPath}` : portalBase;
+          const id = `${idPrefix}-${Buffer.from(title + location).toString("base64").slice(0, 12)}`;
+          if (title && title.length > 5 && !seenIds.has(id)) {
+            seenIds.add(id);
+            allJobs.push({ title, company, location, url, source, id });
+          }
         }
+        offset += LIMIT;
+        if (postings.length < LIMIT || offset >= total) break;
+        await new Promise(r => setTimeout(r, 300));
       }
-      offset += LIMIT;
-      if (postings.length < LIMIT || offset >= total) break;
-      await new Promise(r => setTimeout(r, 300));
+      if (searchText) console.log(`  ${company} +search "${searchText}": ${total} results`);
     }
-    const seen = new Set();
-    const unique = allJobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`${company}: ${unique.length} jobs via Workday API (${total} total in portal)`);
-    return unique;
+    console.log(`${company}: ${allJobs.length} unique jobs via Workday API`);
+    return allJobs;
   } catch (e) {
     console.error(`${company} Workday API error:`, e.message);
     return [];
@@ -277,6 +282,7 @@ async function scrapeUMG() {
     apiUrl: "https://umusic.wd5.myworkdayjobs.com/wday/cxs/umusic/UMGUS/jobs",
     portalBase: "https://umusic.wd5.myworkdayjobs.com",
     source: "umg", company: "Universal Music Group", idPrefix: "umg",
+    searchTerms: ["marketing", "catalog", "artist"],
   });
 }
 
@@ -606,11 +612,7 @@ app.post("/api/clear-cache", (req, res) => {
 // Debug: inspect raw UMG jobs before CA filter
 app.get("/api/debug-umg", async (req, res) => {
   try {
-    const raw = await scrapeWorkdayAPI({
-      apiUrl: "https://umusic.wd5.myworkdayjobs.com/wday/cxs/umusic/UMGUS/jobs",
-      portalBase: "https://umusic.wd5.myworkdayjobs.com",
-      source: "umg", company: "Universal Music Group", idPrefix: "umg",
-    });
+    const raw = await scrapeUMG();
     const marketing = raw.filter(j => /market|catalog|artist|promo|brand/i.test(j.title));
     res.json({
       total: raw.length,
