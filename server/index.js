@@ -3,6 +3,11 @@ const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 const cheerio = require("cheerio");
+const crypto = require("crypto");
+
+function jobId(prefix, text) {
+  return `${prefix}-${crypto.createHash("md5").update(text).digest("hex").slice(0, 12)}`;
+}
 const cron = require("node-cron");
 const fs = require("fs");
 const path = require("path");
@@ -78,7 +83,7 @@ async function scrapeMBW() {
           location,
           url,
           source: "mbw",
-          id: `mbw-${Buffer.from(title + company).toString("base64").slice(0, 12)}`,
+          id: jobId("mbw", title + company),
         });
       }
     });
@@ -119,7 +124,7 @@ async function scrapeROSTR() {
     }
     const withIds = jobs.map((j) => ({
       ...j,
-      id: `ros-${Buffer.from(j.title + j.company).toString("base64").slice(0, 12)}`,
+      id: jobId("ros", j.title + j.company),
     }));
     const seen = new Set();
     const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
@@ -149,7 +154,7 @@ async function scrapeDoorsOpen() {
       const company = $(el).find(".listing-item__info--item, .company, [class*='company']").first().text().trim();
       const location = $(el).find(".listing-item__info--item, [class*='location']").eq(1).text().trim();
       if (title && title.length > 3) {
-        jobs.push({ title, company: company || "Unknown", location, url, source: "doorsopen", id: `do-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
+        jobs.push({ title, company: company || "Unknown", location, url, source: "doorsopen", id: jobId("do", title + company) });
       }
     });
     const seen = new Set();
@@ -177,7 +182,7 @@ async function scrapeDigilogue() {
       const href = $(el).attr("href") || $(el).find("a").attr("href") || "";
       const url = href.startsWith("http") ? href : "https://www.thedigilogue.com" + href;
       if (title && title.length > 3) {
-        jobs.push({ title, company: company || "Unknown", location, url, source: "digilogue", id: `dg-${Buffer.from(title+company).toString("base64").slice(0,12)}` });
+        jobs.push({ title, company: company || "Unknown", location, url, source: "digilogue", id: jobId("dg", title + company) });
       }
     });
     const seen = new Set();
@@ -209,7 +214,7 @@ async function scrapeSony() {
           location: location.replace(/^United States,?\s*/i, "").replace(/,?\s*Remote$/i, ", Remote").trim(),
           url: j.absolute_url || "https://job-boards.greenhouse.io/sonymusicentertainment",
           source: "sony",
-          id: `sony-${Buffer.from(j.title + location).toString("base64").slice(0, 12)}`,
+          id: jobId("sony", j.title + location),
         };
       });
     const seen = new Set();
@@ -257,7 +262,7 @@ async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix,
             .trim();
           const extPath = p.externalPath || "";
           const url = extPath ? `${portalBase}${extPath}` : portalBase;
-          const id = `${idPrefix}-${Buffer.from(title + location).toString("base64").slice(0, 12)}`;
+          const id = jobId(idPrefix, title + location);
           if (title && title.length > 5 && !seenIds.has(id)) {
             seenIds.add(id);
             allJobs.push({ title, company, location, url, source, id });
@@ -303,7 +308,7 @@ async function scrapeUMG() {
           location: p.location || "",
           url: p.externalApplyURL || "https://www.umusiccareers.com",
           source: "umg",
-          id: `umg-${Buffer.from(p.title + (p.location || "")).toString("base64").slice(0, 12)}`,
+          id: jobId("umg", p.title + (p.location || "")),
         }));
       console.log(`  UMG microsite: ${siteJobs.length} jobs from __NEXT_DATA__`);
     }
@@ -343,7 +348,7 @@ async function scrapeConcord() {
           location: location.replace(/^US-/, "").replace(/-/g, ", "),
           url: url.replace("&in_iframe=1", ""),
           source: "concord",
-          id: `con-${Buffer.from(title).toString("base64").slice(0, 12)}`,
+          id: jobId("con", title),
         });
       }
     });
@@ -395,7 +400,7 @@ async function scrapeBMG() {
     const withIds = filtered.map((j) => ({
       ...j,
       company: "BMG",
-      id: `bmg-${Buffer.from(j.title).toString("base64").slice(0, 12)}`,
+      id: jobId("bmg", j.title),
     }));
     const seen = new Set();
     const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
