@@ -278,12 +278,46 @@ async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix,
 }
 
 async function scrapeUMG() {
-  return scrapeWorkdayAPI({
+  // Primary: Workday CXS API (paginated, may be IP-filtered on server)
+  const apiJobs = await scrapeWorkdayAPI({
     apiUrl: "https://umusic.wd5.myworkdayjobs.com/wday/cxs/umusic/UMGUS/jobs",
     portalBase: "https://umusic.wd5.myworkdayjobs.com",
     source: "umg", company: "Universal Music Group", idPrefix: "umg",
-    searchTerms: ["marketing", "catalog", "artist"],
   });
+  // Supplementary: umusiccareers.com __NEXT_DATA__ (has department names, not IP-filtered)
+  let siteJobs = [];
+  try {
+    const { data } = await axios.get("https://www.umusiccareers.com/", {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
+      timeout: 15000,
+    });
+    const m = data.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (m) {
+      const nextData = JSON.parse(m[1]);
+      const posts = nextData.props?.pageProps?.data?.workdayPosts || [];
+      siteJobs = posts
+        .filter(p => p.title && p.title.length > 3)
+        .map(p => ({
+          title: p.title,
+          company: p.department || "Universal Music Group",
+          location: p.location || "",
+          url: p.externalApplyURL || "https://www.umusiccareers.com",
+          source: "umg",
+          id: `umg-${Buffer.from(p.title + (p.location || "")).toString("base64").slice(0, 12)}`,
+        }));
+      console.log(`  UMG microsite: ${siteJobs.length} jobs from __NEXT_DATA__`);
+    }
+  } catch (e) {
+    console.error("UMG microsite error:", e.message);
+  }
+  // Merge and deduplicate (microsite jobs fill gaps from IP-filtered API)
+  const seen = new Set(apiJobs.map(j => j.id));
+  const merged = [...apiJobs];
+  for (const j of siteJobs) {
+    if (!seen.has(j.id)) { seen.add(j.id); merged.push(j); }
+  }
+  if (siteJobs.length > 0) console.log(`  UMG merged: ${merged.length} unique (${merged.length - apiJobs.length} from microsite)`);
+  return merged;
 }
 
 async function scrapeConcord() {
