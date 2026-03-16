@@ -595,6 +595,32 @@ app.post("/api/job-status", (req, res) => {
   res.json({ success: true });
 });
 
+// Clear cache (forces full rescore on next scrape)
+app.post("/api/clear-cache", (req, res) => {
+  try {
+    if (fs.existsSync(CACHE_FILE)) fs.unlinkSync(CACHE_FILE);
+    res.json({ success: true, message: "Cache cleared." });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Debug: inspect raw UMG jobs before CA filter
+app.get("/api/debug-umg", async (req, res) => {
+  try {
+    const raw = await scrapeWorkdayAPI({
+      apiUrl: "https://umusic.wd5.myworkdayjobs.com/wday/cxs/umusic/UMGUS/jobs",
+      portalBase: "https://umusic.wd5.myworkdayjobs.com",
+      source: "umg", company: "Universal Music Group", idPrefix: "umg",
+    });
+    const marketing = raw.filter(j => /market|catalog|artist|promo|brand/i.test(j.title));
+    res.json({
+      total: raw.length,
+      marketingCount: marketing.length,
+      marketingJobs: marketing.map(j => ({ title: j.title, location: j.location })),
+      allJobs: raw.map(j => ({ title: j.title, location: j.location })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   const cache = loadCache();
