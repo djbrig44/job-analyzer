@@ -510,14 +510,21 @@ async function scoreJob(job) {
 }
 
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
-let _scrapeInProgress = false;
+// Lock auto-releases after this long, so a hung/crashed scrape can't block
+// future runs forever (the stuck-lock bug that froze the tracker).
+const SCRAPE_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+let _scrapeStartedAt = null;
 
 async function scrapeAllJobs() {
-  if (_scrapeInProgress) {
-    console.log("⏳ Scrape already in progress, skipping...");
-    return loadCache();
+  if (_scrapeStartedAt) {
+    const heldMs = Date.now() - _scrapeStartedAt;
+    if (heldMs < SCRAPE_LOCK_TIMEOUT_MS) {
+      console.log(`⏳ Scrape already in progress (started ${Math.round(heldMs / 1000)}s ago), skipping...`);
+      return loadCache();
+    }
+    console.warn(`⚠️ Stale scrape lock held for ${Math.round(heldMs / 60000)}m — auto-releasing and continuing.`);
   }
-  _scrapeInProgress = true;
+  _scrapeStartedAt = Date.now();
   try {
     console.log("🎵 Starting job scrape...", new Date().toISOString());
     const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation, wmg, sony] = await Promise.all([
@@ -585,7 +592,7 @@ async function scrapeAllJobs() {
     console.log(`✅ Total saved: ${caJobs.length} CA jobs (${scored} scored)`);
     return cache;
   } finally {
-    _scrapeInProgress = false;
+    _scrapeStartedAt = null;
   }
 }
 
@@ -646,6 +653,15 @@ app.post("/api/clear-cache", (req, res) => {
     if (fs.existsSync(CACHE_FILE)) fs.unlinkSync(CACHE_FILE);
     res.json({ success: true, message: "Cache cleared." });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Manually release a stuck scrape lock (without redeploying)
+app.post("/api/clear-lock", (req, res) => {
+  const wasHeld = _scrapeStartedAt !== null;
+  const heldMs = wasHeld ? Date.now() - _scrapeStartedAt : 0;
+  _scrapeStartedAt = null;
+  console.log(`🔓 Scrape lock cleared via /api/clear-lock (was ${wasHeld ? `held ${Math.round(heldMs / 1000)}s` : "not held"})`);
+  res.json({ success: true, wasHeld, heldSeconds: Math.round(heldMs / 1000) });
 });
 
 // Debug: inspect raw UMG jobs before CA filter
