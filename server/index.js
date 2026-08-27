@@ -485,11 +485,15 @@ async function fetchJobDescription(url) {
   }
 }
 
+// Model used for auto-scoring. Pinned dated models get retired over time — a
+// retired model 404s and every score comes back null (all jobs show a spinner).
+const SCORING_MODEL = "claude-sonnet-5";
+
 async function scoreJob(job) {
   const prompt = `Analyze this job posting:\nTITLE: ${job.title}\nCOMPANY: ${job.company}\nLOCATION: ${job.location || "Not specified"}\nDESCRIPTION: ${job.description || "No description — score based on title and company only."}\nReturn ONLY the JSON object.`;
   try {
     const res = await axios.post("https://api.anthropic.com/v1/messages", {
-      model: "claude-sonnet-4-20250514",
+      model: SCORING_MODEL,
       max_tokens: 1000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: prompt }],
@@ -504,7 +508,9 @@ async function scoreJob(job) {
     const text = res.data.content?.find(b => b.type === "text")?.text || "{}";
     return JSON.parse(text.replace(/```json|```/g, "").trim());
   } catch (e) {
-    console.error(`Score error for "${job.title}":`, e.message);
+    const status = e.response?.status;
+    const apiErr = e.response?.data?.error?.message || e.message;
+    console.error(`Score error for "${job.title}" [${status || "no-status"}]: ${apiErr}`);
     return null;
   }
 }
@@ -562,6 +568,9 @@ async function scrapeAllJobs() {
     }
 
     // Fetch JDs and score new jobs
+    if (toScore.length > 0 && !process.env.ANTHROPIC_API_KEY) {
+      console.warn(`⚠️ ${toScore.length} new jobs need scoring but ANTHROPIC_API_KEY is not set — leaving them unscored.`);
+    }
     if (toScore.length > 0 && process.env.ANTHROPIC_API_KEY) {
       console.log(`📝 Fetching JDs for ${toScore.length} new jobs...`);
       for (const job of toScore) {
