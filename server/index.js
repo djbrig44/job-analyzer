@@ -248,6 +248,76 @@ async function scrapeSony() {
   }
 }
 
+// ─── Generic Greenhouse / Lever board scrapers ───────────────────────────────
+// Public JSON boards, same pattern as the Sony Greenhouse scraper. Slugs are
+// confirmed by the deployed scrape's audit/WARN lines.
+async function scrapeGreenhouse({ slug, source, company }) {
+  const url = `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`;
+  try {
+    const { data, status } = await axios.get(url, { headers: { "Accept": "application/json" }, timeout: 15000 });
+    const raw = data.jobs || [];
+    const jobs = raw
+      .filter(j => j.title && j.title.length > 3)
+      .map(j => {
+        const location = j.location?.name || "";
+        let description = "";
+        if (j.content) {
+          try {
+            // content is HTML-escaped HTML: decode once, then strip tags
+            description = cheerio.load(cheerio.load(j.content).text()).text().replace(/\s+/g, " ").trim().substring(0, 3000);
+          } catch (err) { /* description stays empty; JD fetch will fill it */ }
+        }
+        return {
+          title: j.title,
+          company,
+          location,
+          url: j.absolute_url || url,
+          source,
+          id: jobId(source, j.title + location),
+          description,
+        };
+      });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`${company}: ${unique.length} jobs via Greenhouse API`);
+    auditScraper(company, url, status, raw.length, unique);
+    return unique;
+  } catch (e) {
+    console.warn(`⚠️ WARN: ${company} (Greenhouse) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return [];
+  }
+}
+
+async function scrapeLever({ slug, source, company }) {
+  const url = `https://api.lever.co/v0/postings/${slug}?mode=json`;
+  try {
+    const { data, status } = await axios.get(url, { headers: { "Accept": "application/json" }, timeout: 15000 });
+    const raw = Array.isArray(data) ? data : [];
+    const jobs = raw
+      .filter(p => p.text && p.text.length > 3)
+      .map(p => {
+        const location = p.categories?.location || "";
+        return {
+          title: p.text,
+          company,
+          location,
+          url: p.hostedUrl || url,
+          source,
+          id: jobId(source, p.text + location),
+          description: (p.descriptionPlain || "").replace(/\s+/g, " ").trim().substring(0, 3000),
+        };
+      });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`${company}: ${unique.length} jobs via Lever API`);
+    auditScraper(company, url, status, raw.length, unique);
+    return unique;
+  } catch (e) {
+    console.warn(`⚠️ WARN: ${company} (Lever) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return [];
+  }
+}
+
 // ─── Shared Workday CXS API scraper (paginated) ─────────────────────────────
 async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix, searchTerms }) {
   const LIMIT = 20;
@@ -767,7 +837,10 @@ const SCRAPE_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 let _scrapeStartedAt = null;
 
 // The scrapers run on every scheduled scrape (order matches Promise.all below)
-const SCRAPER_SOURCES = ["mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony"];
+const SCRAPER_SOURCES = [
+  "mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony",
+  "suno", "hybe", "createmusic", "spotify", "audiomack", "redbull",
+];
 
 async function scrapeAllJobs() {
   if (_scrapeStartedAt) {
@@ -781,11 +854,17 @@ async function scrapeAllJobs() {
   _scrapeStartedAt = Date.now();
   try {
     console.log("🎵 Starting job scrape...", new Date().toISOString());
-    const [mbw, rostr, doorsOpen, digilogue, umg, concord, bmg, liveNation, wmg, sony] = await Promise.all([
+    const scraperResults = await Promise.all([
       scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
-      scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG(), scrapeSony()
+      scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG(), scrapeSony(),
+      scrapeGreenhouse({ slug: "suno", source: "suno", company: "Suno" }),
+      scrapeGreenhouse({ slug: "hybeamerica", source: "hybe", company: "HYBE America" }),
+      scrapeGreenhouse({ slug: "createmusicgroup", source: "createmusic", company: "Create Music Group" }),
+      scrapeGreenhouse({ slug: "spotify", source: "spotify", company: "Spotify" }),
+      scrapeLever({ slug: "audiomack", source: "audiomack", company: "Audiomack" }),
+      scrapeLever({ slug: "redbull", source: "redbull", company: "Red Bull" }),
     ]);
-    const allJobs = [...mbw, ...rostr, ...doorsOpen, ...digilogue, ...umg, ...concord, ...bmg, ...liveNation, ...wmg, ...sony];
+    const allJobs = scraperResults.flat();
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
@@ -856,8 +935,12 @@ async function scrapeAllJobs() {
     if (toScore.length > 0 && process.env.ANTHROPIC_API_KEY) {
       console.log(`📝 Fetching JDs for ${toScore.length} new jobs...`);
       for (const job of toScore) {
-        job.description = await fetchJobDescription(job.url);
-        await new Promise(r => setTimeout(r, 300));
+        // ATS APIs (Greenhouse/Lever) already deliver descriptions — only
+        // fetch for jobs that don't have one
+        if (!job.description) {
+          job.description = await fetchJobDescription(job.url);
+          await new Promise(r => setTimeout(r, 300));
+        }
       }
       const withJD = toScore.filter(j => j.description).length;
       console.log(`📄 JDs fetched: ${withJD}/${toScore.length} had extractable descriptions`);

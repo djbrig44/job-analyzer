@@ -40,6 +40,11 @@ const SOURCES = [
   { id: "livenation",name: "Live Nation",         url: "https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite", color: "#FEE440" },
   { id: "spotify",   name: "Spotify",            url: "https://www.lifeatspotify.com/jobs",                    color: "#1DB954" },
   { id: "apple",     name: "Apple Music",        url: "https://jobs.apple.com/en-us/search?product=apple-music-APPMU", color: "#A8A9AD" },
+  { id: "suno",      name: "Suno",               url: "https://suno.com/careers",                              color: "#FF5CAA" },
+  { id: "hybe",      name: "HYBE America",       url: "https://hybecorp.com/eng/career",                       color: "#7B2CBF" },
+  { id: "createmusic", name: "Create Music Group", url: "https://createmusicgroup.com/careers",                color: "#40916C" },
+  { id: "audiomack", name: "Audiomack",          url: "https://audiomack.com/about/jobs",                      color: "#FFA62B" },
+  { id: "redbull",   name: "Red Bull",           url: "https://jobs.redbull.com/us-en",                        color: "#DB0A40" },
   { id: "manual",    name: "Manual",             url: "",                                                      color: "#CDB4DB" },
 ];
 
@@ -591,7 +596,7 @@ Return ONLY the JSON object.`;
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 700, marginBottom: 6, color: "rgba(255,255,255,0.85)" }}>Job Board Sources</div>
               <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "rgba(255,255,255,0.4)", marginBottom: 24 }}>
-                All 11 tracked music industry job boards and their access status
+                All {SOURCES.length} tracked music industry job boards and their access status
               </div>
               {SOURCES.map(s => {
                 const info = {
@@ -607,8 +612,13 @@ Return ONLY the JSON object.`;
                   concord:   { status: "✓ Auto-Scraped",        note: "iCIMS platform, filtered to marketing roles.", ok: true },
                   bmg:       { status: "✓ Auto-Scraped",        note: "Playwright scraper with city-pattern splitter.", ok: true },
                   livenation:{ status: "✓ Auto-Scraped",        note: "Workday API (wd503) — 1,441 jobs paginated, CA filter applied.", ok: true },
-                  spotify:   { status: "⚠ JS-Rendered",         note: "Dynamic Next.js app. Browse manually at lifeatspotify.com.", ok: false },
+                  spotify:   { status: "✓ Auto-Scraped",        note: "Greenhouse API board. Slug pending confirmation from first scrape log.", ok: true },
                   apple:     { status: "⚠ JS-Rendered",         note: "Pre-filtered to Apple Music roles. Bookmark and check manually.", ok: false },
+                  suno:      { status: "✓ Auto-Scraped",        note: "Greenhouse API board.", ok: true },
+                  hybe:      { status: "✓ Auto-Scraped",        note: "Greenhouse API board (HYBE America).", ok: true },
+                  createmusic: { status: "✓ Auto-Scraped",      note: "Greenhouse API board.", ok: true },
+                  audiomack: { status: "✓ Auto-Scraped",        note: "Lever API board.", ok: true },
+                  redbull:   { status: "✓ Auto-Scraped",        note: "Lever API board (Red Bull).", ok: true },
                   manual:    { status: "✎ Manual",              note: "Recruiter and direct-outreach applications entered by hand.", ok: true },
                 }[s.id] || { status: "—", note: "", ok: false };
                 return (
