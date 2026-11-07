@@ -1,16 +1,42 @@
-# React + Vite
+# Music Job Tracker
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Scrapes music-industry job boards every 6 hours, scores each role against a
+candidate profile with the Anthropic API, tracks application pipeline status,
+and emails a digest of new strong matches. React/Vite frontend, Express
+backend, deployed on Railway.
 
-Currently, two official plugins are available:
+## Deployment (Railway)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+**A persistent volume is required.** The job cache (`jobs_cache.json`) holds
+scores, pipeline statuses and notes. Without a volume it lives on the
+container filesystem and **every deploy wipes it** back to the seeded
+entries. Mount a Railway volume at `/data` and set `DATA_DIR=/data`.
 
-## React Compiler
+### Environment variables
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | yes | Job scoring (`/v1/messages`) |
+| `DATA_DIR` | yes in prod | Directory for `jobs_cache.json`; point at the mounted volume (`/data`) |
+| `RESEND_API_KEY` | for digest | Resend HTTP API key (Railway blocks SMTP) |
+| `DIGEST_TO` | for digest | Recipient address |
+| `DIGEST_FROM` | no | Sender; defaults to `Job Tracker <onboarding@resend.dev>` until a domain is verified in Resend |
+| `SCORING_MODEL` | no | Override the scoring model |
+| `SCRAPER_DEBUG` | no | `0` silences per-scrape element dumps |
 
-## Expanding the ESLint configuration
+### Useful endpoints
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- `GET /api/health` — cache size, scored count, source count
+- `GET /api/score-health` — last scoring run, failures, last error
+- `POST /api/scrape` — force a scrape
+- `POST /api/rescore` — score only unscored jobs (async)
+- `POST /api/digest/test` — send the digest now, ignoring recency
+- `POST /api/clear-lock` — release a stuck scrape lock
+- `PATCH /api/jobs/:id` — update `status` / `statusDate` / `notes`
+
+## Local development
+
+```bash
+npm install
+npm run dev        # vite frontend + node server (see package.json)
+```

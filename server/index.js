@@ -9,7 +9,7 @@ function jobId(prefix, text) {
   return `${prefix}-${crypto.createHash("md5").update(text).digest("hex").slice(0, 12)}`;
 }
 const cron = require("node-cron");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const fs = require("fs");
 const path = require("path");
 const { chromium: pwChromium } = require("playwright");
@@ -24,7 +24,10 @@ async function getBrowser() {
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const CACHE_FILE = path.join(__dirname, "jobs_cache.json");
+// Lives on a persistent volume when DATA_DIR is set (Railway volume at /data
+// with DATA_DIR=/data) — otherwise the container filesystem, which is wiped on
+// every deploy, taking statuses and notes with it.
+const CACHE_FILE = path.join(process.env.DATA_DIR || __dirname, "jobs_cache.json");
 
 app.use(cors({ origin: process.env.CLIENT_URL || "*" }));
 app.use(express.json());
@@ -56,8 +59,8 @@ function saveCache(data) {
 // Audit logging for the aggregator scrapers: candidate-element counts and the
 // first 3 parsed jobs (set SCRAPER_DEBUG=0 to silence once selectors are
 // verified), plus a WARN with URL + HTTP status whenever a scraper returns 0.
-function auditScraper(name, url, status, candidates, jobs) {
-  if (process.env.SCRAPER_DEBUG !== "0") {
+function auditScraper(name, url, status, candidates, jobs, dump = true) {
+  if (dump && process.env.SCRAPER_DEBUG !== "0") {
     const first3 = jobs.slice(0, 3).map(j => ({ title: j.title, company: j.company, location: j.location }));
     console.log(`🔎 ${name}: ${candidates} candidate elements, ${jobs.length} jobs parsed. First 3: ${JSON.stringify(first3)}`);
   }
@@ -104,7 +107,7 @@ async function scrapeMBW() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`MBW: scraped ${unique.length} jobs`);
-    auditScraper("MBW", MBW_URL, status, $("ul li a strong").length, unique);
+    auditScraper("MBW", MBW_URL, status, $("ul li a strong").length, unique, false);
     return unique;
   } catch (e) {
     console.warn(`⚠️ WARN: MBW returned 0 jobs — url=${MBW_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
@@ -120,14 +123,22 @@ async function scrapeROSTR() {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     });
     const page = await context.newPage();
+    // networkidle timed out at 45s on this site (long-polling/analytics keep
+    // the network busy) — wait for DOM, then for the job cards themselves
     const rostrResp = await page.goto("https://jobs.rostr.cc/", {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
       timeout: 45000,
     });
-    await page.waitForTimeout(5000);
+    const rostrStatus = rostrResp ? rostrResp.status() : "n/a";
+    try {
+      await page.waitForSelector('a[href^="/job/"]', { timeout: 20000 });
+    } catch (waitErr) {
+      const pageTitle = await page.title().catch(() => "?");
+      const bodyText = await page.evaluate(() => (document.body?.innerText || "").slice(0, 500)).catch(() => "");
+      console.warn(`⚠️ WARN: ROSTR job cards never appeared — status=${rostrStatus} pageTitle=${JSON.stringify(pageTitle)} body=${JSON.stringify(bodyText)}`);
+    }
     const jobs = [];
     const jobCards = await page.$$('a[href^="/job/"]');
-    const rostrStatus = rostrResp ? rostrResp.status() : "n/a";
     for (const card of jobCards) {
       const title = await card.$eval(".position", el => el.textContent.trim()).catch(() => "");
       const company = await card.$eval(".company", el => el.textContent.trim()).catch(() => "");
@@ -178,7 +189,7 @@ async function scrapeDoorsOpen() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Doors Open: scraped ${unique.length} jobs`);
-    auditScraper("Doors Open", DOORS_OPEN_URL, status, $("article.listing-item, .listing-item, article.media").length, unique);
+    auditScraper("Doors Open", DOORS_OPEN_URL, status, $("article.listing-item, .listing-item, article.media").length, unique, false);
     return unique;
   } catch (e) {
     console.warn(`⚠️ WARN: Doors Open returned 0 jobs — url=${DOORS_OPEN_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
@@ -208,7 +219,7 @@ async function scrapeDigilogue() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Digilogue: scraped ${unique.length} jobs`);
-    auditScraper("Digilogue", DIGILOGUE_URL, status, $("a[href*='apply'], .w-dyn-item, [class*='job']").length, unique);
+    auditScraper("Digilogue", DIGILOGUE_URL, status, $("a[href*='apply'], .w-dyn-item, [class*='job']").length, unique, false);
     return unique;
   } catch (e) {
     console.warn(`⚠️ WARN: Digilogue returned 0 jobs — url=${DIGILOGUE_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
@@ -248,75 +259,55 @@ async function scrapeSony() {
   }
 }
 
-// ─── Generic Greenhouse / Lever board scrapers ───────────────────────────────
-// Public JSON boards, same pattern as the Sony Greenhouse scraper. Slugs are
-// confirmed by the deployed scrape's audit/WARN lines.
-async function scrapeGreenhouse({ slug, source, company }) {
-  const url = `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`;
+// ─── Generic Ashby board scraper ─────────────────────────────────────────────
+// Public JSON posting API: api.ashbyhq.com/posting-api/job-board/<slug>
+async function scrapeAshby({ slug, source, company }) {
+  const url = `https://api.ashbyhq.com/posting-api/job-board/${slug}`;
   try {
     const { data, status } = await axios.get(url, { headers: { "Accept": "application/json" }, timeout: 15000 });
     const raw = data.jobs || [];
     const jobs = raw
-      .filter(j => j.title && j.title.length > 3)
-      .map(j => {
-        const location = j.location?.name || "";
-        let description = "";
-        if (j.content) {
-          try {
-            // content is HTML-escaped HTML: decode once, then strip tags
-            description = cheerio.load(cheerio.load(j.content).text()).text().replace(/\s+/g, " ").trim().substring(0, 3000);
-          } catch (err) { /* description stays empty; JD fetch will fill it */ }
+      .filter(p => p.title && p.title.length > 3 && p.isListed !== false)
+      .map(p => {
+        let location = p.location || "";
+        if (!location && p.isRemote) location = "Remote";
+        let description = (p.descriptionPlain || "").trim();
+        if (!description && p.descriptionHtml) {
+          try { description = cheerio.load(p.descriptionHtml).text(); } catch (err) { /* JD fetch fills it */ }
         }
         return {
-          title: j.title,
+          title: p.title,
           company,
           location,
-          url: j.absolute_url || url,
+          url: p.jobUrl || url,
           source,
-          id: jobId(source, j.title + location),
-          description,
+          id: jobId(source, p.title + location),
+          description: description.replace(/\s+/g, " ").trim().substring(0, 3000),
         };
       });
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`${company}: ${unique.length} jobs via Greenhouse API`);
+    console.log(`${company}: ${unique.length} jobs via Ashby API`);
     auditScraper(company, url, status, raw.length, unique);
     return unique;
   } catch (e) {
-    console.warn(`⚠️ WARN: ${company} (Greenhouse) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
+    console.warn(`⚠️ WARN: ${company} (Ashby) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
 
-async function scrapeLever({ slug, source, company }) {
-  const url = `https://api.lever.co/v0/postings/${slug}?mode=json`;
-  try {
-    const { data, status } = await axios.get(url, { headers: { "Accept": "application/json" }, timeout: 15000 });
-    const raw = Array.isArray(data) ? data : [];
-    const jobs = raw
-      .filter(p => p.text && p.text.length > 3)
-      .map(p => {
-        const location = p.categories?.location || "";
-        return {
-          title: p.text,
-          company,
-          location,
-          url: p.hostedUrl || url,
-          source,
-          id: jobId(source, p.text + location),
-          description: (p.descriptionPlain || "").replace(/\s+/g, " ").trim().substring(0, 3000),
-        };
-      });
-    const seen = new Set();
-    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    console.log(`${company}: ${unique.length} jobs via Lever API`);
-    auditScraper(company, url, status, raw.length, unique);
-    return unique;
-  } catch (e) {
-    console.warn(`⚠️ WARN: ${company} (Lever) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
-    return [];
-  }
-}
+// Sources that have no public JSON board: HYBE America runs its own Offercent
+// portal (careers.hybecorp.com), Spotify and Red Bull run their own platforms
+// (lifeatspotify.com, jobs.redbull.com) with no documented feed, and Audiomack
+// and Create Music Group expose no ATS board at all. Logged once at boot
+// instead of 404ing every scrape cycle.
+const UNSCRAPEABLE_SOURCES = [
+  { name: "HYBE America", reason: "own Offercent portal at careers.hybecorp.com" },
+  { name: "Create Music Group", reason: "no public ATS board found" },
+  { name: "Spotify", reason: "own platform at lifeatspotify.com, no documented JSON feed" },
+  { name: "Audiomack", reason: "no public ATS board found (aggregator listings only)" },
+  { name: "Red Bull", reason: "own platform at jobs.redbull.com, no documented JSON feed" },
+];
 
 // ─── Shared Workday CXS API scraper (paginated) ─────────────────────────────
 async function scrapeWorkdayAPI({ apiUrl, portalBase, source, company, idPrefix, searchTerms }) {
@@ -425,20 +416,37 @@ async function scrapeConcord() {
     });
     const $ = cheerio.load(data);
     const jobs = [];
-    $(".iCIMS_JobsTable a[href*='/jobs/']").each((_, el) => {
-      const title = $(el).text().trim();
+    // iCIMS markup drifted: postings are card-style anchors (job detail links
+    // carry a numeric id) whose text can include the "Title" header cell.
+    // Match anywhere in the doc, prefer explicit title/location elements
+    // inside the card, and fall back to text patterns.
+    $("a[href*='/jobs/']").each((_, el) => {
       const href = $(el).attr("href") || "";
-      const url = href.startsWith("http") ? href : "https://careers-concord.icims.com" + href;
-      // Get the parent row and find location
-      const row = $(el).closest("tr, .iCIMS_JobListingRow, div");
-      const location = row.find("[class*='location'], [class*='Location']").text().trim()
-        || row.text().match(/US-[A-Z]{2}-[\w\s]+/)?.[0] || "";
-      if (title && title.length > 3 && !title.match(/^ID\s/)) {
+      if (!/\/jobs\/\d+/.test(href)) return;
+      const url = (href.startsWith("http") ? href : "https://careers-concord.icims.com" + href).replace("&in_iframe=1", "");
+      // Prefer a heading that is a real title, not a header-label cell
+      const headerLabel = /^(title|job locations?|location|id|posted date|category|type|department)$/i;
+      let title = "";
+      $(el).find("h1, h2, h3, h4, .iCIMS_JobTitle, [class*='title' i]").each((_, t) => {
+        const txt = $(t).text().replace(/\s+/g, " ").trim();
+        if (!title && txt && !headerLabel.test(txt)) title = txt;
+      });
+      if (!title) title = $(el).text().trim();
+      // Strip a leading "Title" header cell and trailing field sections
+      title = title.replace(/^\s*title\s*[\r\n]+/i, "").replace(/\s+/g, " ").trim();
+      title = title.split(/\s*(?:job locations?|posted date|requisition id|job id)/i)[0].trim();
+      const card = $(el).closest("tr, li, .row, [class*='JobsTable' i], div");
+      let location = $(el).find("[class*='location' i]").first().text().trim()
+        || card.find("[class*='location' i]").first().text().trim()
+        || ($(el).text() + " " + card.text()).match(/US-[A-Z]{2}(?:-[\w .]+)?/)?.[0]
+        || "";
+      location = location.replace(/^\s*location\s*[\r\n]+/i, "").replace(/^US-/, "").replace(/-/g, ", ").replace(/\s+/g, " ").trim();
+      if (title && title.length > 3 && title.length < 200 && !title.match(/^ID\s/i) && !/^(search|view|next|previous|more)\b/i.test(title)) {
         jobs.push({
           title,
           company: "Concord",
-          location: location.replace(/^US-/, "").replace(/-/g, ", "),
-          url: url.replace("&in_iframe=1", ""),
+          location,
+          url,
           source: "concord",
           id: jobId("con", title),
         });
@@ -671,21 +679,17 @@ function seedPipelineEntries() {
   }
 }
 
-// ─── Email digest (Nodemailer + Gmail SMTP app password) ─────────────────────
+// ─── Email digest (Resend HTTP API — Railway blocks outbound SMTP) ───────────
 const DIGEST_TO = process.env.DIGEST_TO;
-const DIGEST_FROM = process.env.DIGEST_FROM;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
-const digestEnabled = !!(DIGEST_TO && DIGEST_FROM && GMAIL_APP_PASSWORD);
+// resend.dev sender works before a domain is verified
+const DIGEST_FROM = process.env.DIGEST_FROM || "Job Tracker <onboarding@resend.dev>";
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const digestEnabled = !!(DIGEST_TO && RESEND_API_KEY);
 
-let _mailer = null;
-function getMailer() {
-  if (!_mailer) {
-    _mailer = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: DIGEST_FROM, pass: GMAIL_APP_PASSWORD },
-    });
-  }
-  return _mailer;
+let _resend = null;
+function getResend() {
+  if (!_resend) _resend = new Resend(RESEND_API_KEY);
+  return _resend;
 }
 
 const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -728,11 +732,20 @@ async function sendDigest(jobs, reason) {
   const excellent = sorted.filter((j) => (j.result?.score || 0) >= 85).length;
   const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent)`;
   try {
-    await getMailer().sendMail({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) });
-    console.log(`📧 Digest sent (${reason}): ${sorted.length} jobs, ${excellent} excellent → ${DIGEST_TO}`);
+    // 15s cap so a hung request can't stall callers (e.g. /api/digest/test)
+    const result = await Promise.race([
+      getResend().emails.send({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Resend send timed out after 15s")), 15000)),
+    ]);
+    if (result.error) {
+      console.error(`📧 Digest send failed (${reason}): ${JSON.stringify(result.error)}`);
+      return false;
+    }
+    console.log(`📧 Digest sent (${reason}): ${sorted.length} jobs, ${excellent} excellent → ${DIGEST_TO} (message id ${result.data?.id})`);
     return true;
   } catch (e) {
-    console.error(`📧 Digest send failed (${reason}): ${e.message}`);
+    const body = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+    console.error(`📧 Digest send failed (${reason}): ${body}`);
     return false;
   }
 }
@@ -752,7 +765,7 @@ const NON_US_PLACES = /\b(UK|United Kingdom|England|Scotland|Wales|Ireland|EU|Eu
 const CANADA_PATTERN = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
 
 // Positive California signal
-const CA_PATTERN = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
+const CA_PATTERN = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale|Venice/i;
 // Country-wide remote with no narrower qualifier: "Remote", "Remote, Remote",
 // "Remote - US", "United States", "Remote - United States"
 const BARE_REMOTE_PATTERN = /^\s*(remote([\s,\/–—-]+(remote|us|usa|u\.s\.a?\.?|united states))?|(us|usa|united states)([\s,\/–—-]+remote)?)\s*$/i;
@@ -839,7 +852,7 @@ let _scrapeStartedAt = null;
 // The scrapers run on every scheduled scrape (order matches Promise.all below)
 const SCRAPER_SOURCES = [
   "mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony",
-  "suno", "hybe", "createmusic", "spotify", "audiomack", "redbull",
+  "suno",
 ];
 
 async function scrapeAllJobs() {
@@ -857,12 +870,7 @@ async function scrapeAllJobs() {
     const scraperResults = await Promise.all([
       scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
       scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG(), scrapeSony(),
-      scrapeGreenhouse({ slug: "suno", source: "suno", company: "Suno" }),
-      scrapeGreenhouse({ slug: "hybeamerica", source: "hybe", company: "HYBE America" }),
-      scrapeGreenhouse({ slug: "createmusicgroup", source: "createmusic", company: "Create Music Group" }),
-      scrapeGreenhouse({ slug: "spotify", source: "spotify", company: "Spotify" }),
-      scrapeLever({ slug: "audiomack", source: "audiomack", company: "Audiomack" }),
-      scrapeLever({ slug: "redbull", source: "redbull", company: "Red Bull" }),
+      scrapeAshby({ slug: "suno", source: "suno", company: "Suno" }),
     ]);
     const allJobs = scraperResults.flat();
     // Filter out junk CTA entries
@@ -1092,7 +1100,7 @@ app.post("/api/clear-lock", (req, res) => {
 // Send the digest for the current cache regardless of recency (delivery test)
 app.post("/api/digest/test", async (req, res) => {
   if (!digestEnabled) {
-    return res.status(500).json({ error: "Digest disabled: set DIGEST_TO, DIGEST_FROM, GMAIL_APP_PASSWORD." });
+    return res.status(500).json({ error: "Digest disabled: set RESEND_API_KEY and DIGEST_TO (DIGEST_FROM optional)." });
   }
   const cache = loadCache();
   const jobs = cache.jobs.filter((j) => j.result && j.result.score >= 70);
@@ -1220,10 +1228,13 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🤖 Scoring model: ${SCORING_MODEL}`);
   try { seedPipelineEntries(); } catch (e) { console.error("Seed error (non-fatal):", e.message); }
+  for (const s of UNSCRAPEABLE_SOURCES) {
+    console.warn(`⚠️ WARN: ${s.name} is not scrapeable (${s.reason}) — check manually; not in the active scrape list.`);
+  }
   if (!digestEnabled) {
-    console.log("📧 Email digest disabled — set DIGEST_TO, DIGEST_FROM and GMAIL_APP_PASSWORD to enable.");
+    console.log("📧 Email digest disabled — set RESEND_API_KEY and DIGEST_TO to enable (DIGEST_FROM optional).");
   } else {
-    console.log(`📧 Email digest enabled → ${DIGEST_TO}`);
+    console.log(`📧 Email digest enabled via Resend → ${DIGEST_TO} (from: ${DIGEST_FROM})`);
   }
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error("🚨 ANTHROPIC_API_KEY IS NOT SET — jobs will be scraped but NEVER scored. Set it in Railway variables.");
@@ -1259,13 +1270,15 @@ app.listen(PORT, () => {
       const age = cache.lastUpdated
         ? (Date.now() - new Date(cache.lastUpdated)) / 1000 / 60 / 60
         : 999;
-      if (age > 6) {
-        console.log("Cache stale or empty — running initial scrape...");
+      // A fresh cache with only the seeded entries means the volume is empty
+      // (or missing) — scrape regardless of age in that case
+      if (age > 6 || cache.jobs.length < 20) {
+        console.log(`Cache stale or thin (${cache.jobs.length} jobs, ${age.toFixed(1)}h old) — running initial scrape...`);
         scrapeAllJobs().catch((e) =>
           console.error("Initial scrape error (non-fatal):", e.message)
         );
       } else {
-        console.log(`Cache is ${age.toFixed(1)}h old — skipping scrape.`);
+        console.log(`Cache is ${age.toFixed(1)}h old with ${cache.jobs.length} jobs — skipping scrape.`);
       }
     } catch (e) {
       console.error("Startup scrape check error (non-fatal):", e.message);
