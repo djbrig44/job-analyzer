@@ -563,10 +563,21 @@ async function scrapeAllJobs() {
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
+
+    // Title pre-filter: drop hourly venue/crew roles (bulk of Live Nation's
+    // feed) and sub-manager titles before location filtering and scoring.
+    // Excluded jobs are not stored at all.
+    const venueCrewPattern = /\b(security|bartender|barback|server|cook|chef|usher|ticket (taker|seller|agent)|stagehand|stage hand|janitorial|porter|cleaning|custodial|parking|dispatcher|merch(andise)? (staff|seller|cashier)|concessions|seasonal|intern(ship)?|runner|loader|maintenance|box office|guest services|hospitality|catering|food (runner|and beverage|& beverage))\b/i;
+    const juniorTitlePattern = /^\s*(coordinator|assistant|analyst|specialist|associate)\b/i;
+    const titleKept = realJobs.filter(
+      (j) => !venueCrewPattern.test(j.title) && !juniorTitlePattern.test(j.title)
+    );
+    console.log(`Title filter: ${realJobs.length - titleKept.length} excluded, ${titleKept.length} remaining`);
+
     // Keep only California jobs — exclude Canadian "XX, CA" (province, country) false positives
     const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale|Remote|United States/i;
     const canadaPattern = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
-    const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location) && !canadaPattern.test(j.location));
+    const caJobs = titleKept.filter((j) => j.location && caPattern.test(j.location) && !canadaPattern.test(j.location));
     console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
 
     // Preserve existing scores from cache
