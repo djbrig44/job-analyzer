@@ -481,13 +481,29 @@ async function fetchJobDescription(url) {
     const bodyText = $("body").text().replace(/\s+/g, " ").trim();
     return bodyText.length > 100 ? bodyText.substring(0, 3000) : "";
   } catch (e) {
+    console.warn(`JD fetch failed for ${url} [${e.response?.status || "no-status"}]: ${e.message}`);
     return "";
   }
 }
 
 // Model used for auto-scoring. Pinned dated models get retired over time — a
 // retired model 404s and every score comes back null (all jobs show a spinner).
-const SCORING_MODEL = "claude-sonnet-5";
+// Overridable via env so a model swap doesn't need a code deploy.
+const SCORING_MODEL = process.env.SCORING_MODEL || "claude-sonnet-5-5";
+
+// Rolling health of the scoring pipeline, exposed at /api/score-health.
+// Counters cover the current/most recent scoring run (reset at run start).
+const _scoreHealth = {
+  lastAttemptAt: null,
+  successCount: 0,
+  failureCount: 0,
+  lastError: null,
+};
+function resetScoreHealthRun() {
+  _scoreHealth.successCount = 0;
+  _scoreHealth.failureCount = 0;
+  _scoreHealth.lastError = null;
+}
 
 async function scoreJob(job) {
   const prompt = `Analyze this job posting:\nTITLE: ${job.title}\nCOMPANY: ${job.company}\nLOCATION: ${job.location || "Not specified"}\nDESCRIPTION: ${job.description || "No description — score based on title and company only."}\nReturn ONLY the JSON object.`;
@@ -506,10 +522,16 @@ async function scoreJob(job) {
       timeout: 30000,
     });
     const text = res.data.content?.find(b => b.type === "text")?.text || "{}";
-    return JSON.parse(text.replace(/```json|```/g, "").trim());
+    const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    _scoreHealth.lastAttemptAt = new Date().toISOString();
+    _scoreHealth.successCount++;
+    return parsed;
   } catch (e) {
     const status = e.response?.status;
-    const apiErr = e.response?.data?.error?.message || e.message;
+    const apiErr = JSON.stringify(e.response?.data?.error || e.response?.data) || e.message;
+    _scoreHealth.lastAttemptAt = new Date().toISOString();
+    _scoreHealth.failureCount++;
+    _scoreHealth.lastError = `[${status || "no-status"}] ${e.response?.data?.error?.message || e.message}`;
     console.error(`Score error for "${job.title}" [${status || "no-status"}]: ${apiErr}`);
     return null;
   }
@@ -580,7 +602,8 @@ async function scrapeAllJobs() {
       const withJD = toScore.filter(j => j.description).length;
       console.log(`📄 JDs fetched: ${withJD}/${toScore.length} had extractable descriptions`);
 
-      console.log(`🤖 Scoring ${toScore.length} new jobs...`);
+      resetScoreHealthRun();
+      console.log(`🤖 Scoring ${toScore.length} new jobs with ${SCORING_MODEL}...`);
       for (let i = 0; i < toScore.length; i += 3) {
         const batch = toScore.slice(i, i + 3);
         const results = await Promise.all(batch.map(j => scoreJob(j)));
@@ -690,7 +713,72 @@ app.get("/api/debug-umg", async (req, res) => {
 // Health check
 app.get("/api/health", (req, res) => {
   const cache = loadCache();
-  res.json({ status: "ok", cachedJobs: cache.jobs.length, lastUpdated: cache.lastUpdated });
+  res.json({
+    status: "ok",
+    cachedJobs: cache.jobs.length,
+    scoredJobs: cache.jobs.filter(j => j.result).length,
+    lastUpdated: cache.lastUpdated,
+  });
+});
+
+// Scoring pipeline health: last attempt, success/failure counts for the most
+// recent run, and the last error seen
+app.get("/api/score-health", (req, res) => {
+  const cache = loadCache();
+  res.json({
+    model: SCORING_MODEL,
+    lastAttemptAt: _scoreHealth.lastAttemptAt,
+    successCount: _scoreHealth.successCount,
+    failureCount: _scoreHealth.failureCount,
+    lastError: _scoreHealth.lastError,
+    unscoredJobs: cache.jobs.filter(j => !j.result).length,
+  });
+});
+
+// Re-score only jobs with result: null — avoids a full re-scrape when scoring
+// was broken but the scrape data is fine. Runs async; poll /api/score-health.
+app.post("/api/rescore", (req, res) => {
+  if (_scrapeStartedAt) {
+    return res.status(409).json({ error: "A scrape/rescore is already in progress." });
+  }
+  const cache = loadCache();
+  const toScore = cache.jobs.filter(j => !j.result);
+  if (toScore.length === 0) {
+    return res.json({ started: false, message: "All jobs already scored." });
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: "ANTHROPIC_API_KEY is not set — cannot score." });
+  }
+  res.json({ started: true, toScore: toScore.length, model: SCORING_MODEL });
+  // Run in background under the scrape lock so a cron scrape can't collide
+  _scrapeStartedAt = Date.now();
+  (async () => {
+    try {
+      resetScoreHealthRun();
+      console.log(`🔁 Rescore: ${toScore.length} unscored jobs with ${SCORING_MODEL}...`);
+      for (const job of toScore) {
+        if (!job.description) {
+          job.description = await fetchJobDescription(job.url);
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+      for (let i = 0; i < toScore.length; i += 3) {
+        const batch = toScore.slice(i, i + 3);
+        const results = await Promise.all(batch.map(j => scoreJob(j)));
+        for (let k = 0; k < batch.length; k++) batch[k].result = results[k];
+        if ((i / 3) % 10 === 0) console.log(`  Rescored ${Math.min(i + 3, toScore.length)}/${toScore.length}`);
+      }
+      // toScore entries reference the same objects as cache.jobs, so saving
+      // the cache persists the new results
+      cache.lastUpdated = new Date().toISOString();
+      saveCache(cache);
+      console.log(`🔁 Rescore done: ${_scoreHealth.successCount} scored, ${_scoreHealth.failureCount} failed`);
+    } catch (e) {
+      console.error("Rescore error:", e.message);
+    } finally {
+      _scrapeStartedAt = null;
+    }
+  })();
 });
 
 // Catch-all for frontend in production
@@ -722,6 +810,32 @@ cron.schedule("0 */6 * * *", () => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🤖 Scoring model: ${SCORING_MODEL}`);
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error("🚨 ANTHROPIC_API_KEY IS NOT SET — jobs will be scraped but NEVER scored. Set it in Railway variables.");
+  } else {
+    // Probe the key + model once so auth/model problems are visible at boot
+    axios.post("https://api.anthropic.com/v1/messages", {
+      model: SCORING_MODEL, max_tokens: 1, messages: [{ role: "user", content: "ping" }],
+    }, {
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      timeout: 15000,
+    }).then(() => {
+      console.log(`✅ Anthropic API key + model "${SCORING_MODEL}" verified`);
+    }).catch((e) => {
+      const status = e.response?.status;
+      const msg = e.response?.data?.error?.message || e.message;
+      if (status === 401 || status === 403) {
+        console.error(`🚨 ANTHROPIC_API_KEY IS INVALID [${status}]: ${msg} — scoring will fail until the key is fixed.`);
+      } else {
+        console.error(`🚨 Scoring probe failed [${status || "no-status"}]: ${msg}`);
+      }
+    });
+  }
   console.log("Waiting 30s before initial scrape to let Railway health check pass...");
 
   // Delay scrape so Railway's health check can confirm the server is alive first
