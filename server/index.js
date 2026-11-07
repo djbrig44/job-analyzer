@@ -24,7 +24,10 @@ async function getBrowser() {
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const CACHE_FILE = path.join(__dirname, "jobs_cache.json");
+// Lives on a persistent volume when DATA_DIR is set (Railway volume at /data
+// with DATA_DIR=/data) — otherwise the container filesystem, which is wiped on
+// every deploy, taking statuses and notes with it.
+const CACHE_FILE = path.join(process.env.DATA_DIR || __dirname, "jobs_cache.json");
 
 app.use(cors({ origin: process.env.CLIENT_URL || "*" }));
 app.use(express.json());
@@ -1267,13 +1270,15 @@ app.listen(PORT, () => {
       const age = cache.lastUpdated
         ? (Date.now() - new Date(cache.lastUpdated)) / 1000 / 60 / 60
         : 999;
-      if (age > 6) {
-        console.log("Cache stale or empty — running initial scrape...");
+      // A fresh cache with only the seeded entries means the volume is empty
+      // (or missing) — scrape regardless of age in that case
+      if (age > 6 || cache.jobs.length < 20) {
+        console.log(`Cache stale or thin (${cache.jobs.length} jobs, ${age.toFixed(1)}h old) — running initial scrape...`);
         scrapeAllJobs().catch((e) =>
           console.error("Initial scrape error (non-fatal):", e.message)
         );
       } else {
-        console.log(`Cache is ${age.toFixed(1)}h old — skipping scrape.`);
+        console.log(`Cache is ${age.toFixed(1)}h old with ${cache.jobs.length} jobs — skipping scrape.`);
       }
     } catch (e) {
       console.error("Startup scrape check error (non-fatal):", e.message);
