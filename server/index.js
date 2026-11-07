@@ -52,9 +52,22 @@ function saveCache(data) {
 }
 
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
+// Audit logging for the aggregator scrapers: candidate-element counts and the
+// first 3 parsed jobs (set SCRAPER_DEBUG=0 to silence once selectors are
+// verified), plus a WARN with URL + HTTP status whenever a scraper returns 0.
+function auditScraper(name, url, status, candidates, jobs) {
+  if (process.env.SCRAPER_DEBUG !== "0") {
+    const first3 = jobs.slice(0, 3).map(j => ({ title: j.title, company: j.company, location: j.location }));
+    console.log(`🔎 ${name}: ${candidates} candidate elements, ${jobs.length} jobs parsed. First 3: ${JSON.stringify(first3)}`);
+  }
+  if (jobs.length === 0) {
+    console.warn(`⚠️ WARN: ${name} returned 0 jobs — url=${url} status=${status ?? "n/a"} candidateElements=${candidates}`);
+  }
+}
+const MBW_URL = "https://www.musicbusinessworldwide.com/jobs/";
 async function scrapeMBW() {
   try {
-    const { data } = await axios.get("https://www.musicbusinessworldwide.com/jobs/", {
+    const { data, status } = await axios.get(MBW_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 15000,
     });
@@ -90,9 +103,10 @@ async function scrapeMBW() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`MBW: scraped ${unique.length} jobs`);
+    auditScraper("MBW", MBW_URL, status, $("ul li a strong").length, unique);
     return unique;
   } catch (e) {
-    console.error("MBW scrape error:", e.message);
+    console.warn(`⚠️ WARN: MBW returned 0 jobs — url=${MBW_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
@@ -105,13 +119,14 @@ async function scrapeROSTR() {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     });
     const page = await context.newPage();
-    await page.goto("https://jobs.rostr.cc/", {
+    const rostrResp = await page.goto("https://jobs.rostr.cc/", {
       waitUntil: "networkidle",
       timeout: 45000,
     });
     await page.waitForTimeout(5000);
     const jobs = [];
     const jobCards = await page.$$('a[href^="/job/"]');
+    const rostrStatus = rostrResp ? rostrResp.status() : "n/a";
     for (const card of jobCards) {
       const title = await card.$eval(".position", el => el.textContent.trim()).catch(() => "");
       const company = await card.$eval(".company", el => el.textContent.trim()).catch(() => "");
@@ -129,18 +144,20 @@ async function scrapeROSTR() {
     const seen = new Set();
     const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`ROSTR: scraped ${unique.length} jobs`);
+    auditScraper("ROSTR", "https://jobs.rostr.cc/", rostrStatus, jobCards.length, unique);
     return unique;
   } catch (e) {
-    console.error("ROSTR scrape error:", e.message);
+    console.warn(`⚠️ WARN: ROSTR returned 0 jobs — url=https://jobs.rostr.cc/ status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
 }
 
+const DOORS_OPEN_URL = "https://www.doorsopen.co/jobs/";
 async function scrapeDoorsOpen() {
   try {
-    const { data } = await axios.get("https://www.doorsopen.co/jobs/", {
+    const { data, status } = await axios.get(DOORS_OPEN_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
@@ -160,16 +177,18 @@ async function scrapeDoorsOpen() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Doors Open: scraped ${unique.length} jobs`);
+    auditScraper("Doors Open", DOORS_OPEN_URL, status, $("article.listing-item, .listing-item, article.media").length, unique);
     return unique;
   } catch (e) {
-    console.error("Doors Open scrape error:", e.message);
+    console.warn(`⚠️ WARN: Doors Open returned 0 jobs — url=${DOORS_OPEN_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
 
+const DIGILOGUE_URL = "https://www.thedigilogue.com/career-listings";
 async function scrapeDigilogue() {
   try {
-    const { data } = await axios.get("https://www.thedigilogue.com/career-listings", {
+    const { data, status } = await axios.get(DIGILOGUE_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
@@ -188,9 +207,10 @@ async function scrapeDigilogue() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Digilogue: scraped ${unique.length} jobs`);
+    auditScraper("Digilogue", DIGILOGUE_URL, status, $("a[href*='apply'], .w-dyn-item, [class*='job']").length, unique);
     return unique;
   } catch (e) {
-    console.error("Digilogue scrape error:", e.message);
+    console.warn(`⚠️ WARN: Digilogue returned 0 jobs — url=${DIGILOGUE_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
@@ -325,9 +345,10 @@ async function scrapeUMG() {
   return merged;
 }
 
+const CONCORD_URL = "https://careers-concord.icims.com/jobs/search?ss=1&searchKeyword=marketing&in_iframe=1";
 async function scrapeConcord() {
   try {
-    const { data } = await axios.get("https://careers-concord.icims.com/jobs/search?ss=1&searchKeyword=marketing&in_iframe=1", {
+    const { data, status } = await axios.get(CONCORD_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
@@ -355,9 +376,10 @@ async function scrapeConcord() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Concord: scraped ${unique.length} jobs`);
+    auditScraper("Concord", CONCORD_URL, status, $(".iCIMS_JobsTable a[href*='/jobs/']").length, unique);
     return unique;
   } catch (e) {
-    console.error("Concord scrape error:", e.message);
+    console.warn(`⚠️ WARN: Concord returned 0 jobs — url=${CONCORD_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
