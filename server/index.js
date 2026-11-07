@@ -579,6 +579,57 @@ function filterByLocation(jobs) {
   return { kept, rejected };
 }
 
+// ─── Cross-source dedup ───────────────────────────────────────────────────────
+// Same posting often arrives from an employer's own ATS and an aggregator.
+// Key = normalize(title) + "|" + normalize(company); a leading brand prefix in
+// the title ("Insomniac - Marketing Campaign Specialist" at Live Nation) is
+// stripped and used as the effective company so it collides with the
+// aggregator's copy (company "Insomniac", title "Marketing Campaign
+// Specialist"). On collision the employer-ATS copy wins and the loser's URL is
+// kept in altUrls.
+const ATS_SOURCES = new Set(["umg", "wmg", "sony", "livenation", "bmg", "concord"]);
+// Guard so a dash inside an ordinary title ("Sr. Manager - Digital Marketing")
+// is not mistaken for a brand prefix
+const ROLE_WORDS = /\b(manager|director|coordinator|vp|vice|president|head|chief|senior|sr|jr|junior|lead|principal|executive|specialist|analyst|assistant|associate|intern|officer|producer|engineer|designer|representative|supervisor)\b/i;
+
+function normalizeDedup(s) {
+  return (s || "").toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function dedupKey(job) {
+  let title = job.title || "";
+  let company = job.company || "";
+  const m = title.match(/^\s*([A-Za-z0-9&.'\s]{2,40}?)\s*[-–—:|]\s+(.{5,})$/);
+  if (m && !ROLE_WORDS.test(m[1])) {
+    title = m[2];
+    company = m[1];
+  }
+  return normalizeDedup(title) + "|" + normalizeDedup(company);
+}
+
+function dedupJobs(jobs) {
+  const byKey = new Map();
+  let merged = 0;
+  for (const job of jobs) {
+    const key = dedupKey(job);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, job);
+      continue;
+    }
+    merged++;
+    const jobIsATS = ATS_SOURCES.has(job.source);
+    const existingIsATS = ATS_SOURCES.has(existing.source);
+    const keeper = jobIsATS && !existingIsATS ? job : existing;
+    const loser = keeper === job ? existing : job;
+    keeper.altUrls = [...new Set([...(keeper.altUrls || []), ...(loser.altUrls || []), loser.url])].filter(
+      (u) => u && u !== keeper.url
+    );
+    byKey.set(key, keeper);
+  }
+  return { jobs: [...byKey.values()], merged };
+}
+
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
 // Lock auto-releases after this long, so a hung/crashed scrape can't block
 // future runs forever (the stuck-lock bug that froze the tracker).
@@ -625,6 +676,10 @@ async function scrapeAllJobs() {
       console.log(`📍 Rejected location samples (${locRejected.length} total): ${sample.join(", ")}`);
     }
 
+    // Collapse the same posting arriving from multiple sources
+    const { jobs: dedupedJobs, merged } = dedupJobs(caJobs);
+    console.log(`Dedup: ${merged} merged`);
+
     // Preserve existing scores from cache
     const existingCache = loadCache();
     const scoredMap = new Map();
@@ -635,7 +690,7 @@ async function scrapeAllJobs() {
     // Identify new/unscored jobs
     const enrichedJobs = [];
     const toScore = [];
-    for (const job of caJobs) {
+    for (const job of dedupedJobs) {
       const existing = scoredMap.get(job.id);
       if (existing) {
         enrichedJobs.push({ ...job, description: existing.description, result: existing.result, status: existing.status });
@@ -677,7 +732,7 @@ async function scrapeAllJobs() {
     const cache = { jobs: enrichedJobs, lastUpdated: new Date().toISOString() };
     saveCache(cache);
     const scored = enrichedJobs.filter(j => j.result).length;
-    console.log(`✅ Total saved: ${caJobs.length} CA jobs (${scored} scored)`);
+    console.log(`✅ Total saved: ${dedupedJobs.length} CA jobs (${scored} scored)`);
     return cache;
   } finally {
     _scrapeStartedAt = null;
