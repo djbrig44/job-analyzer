@@ -56,8 +56,8 @@ function saveCache(data) {
 // Audit logging for the aggregator scrapers: candidate-element counts and the
 // first 3 parsed jobs (set SCRAPER_DEBUG=0 to silence once selectors are
 // verified), plus a WARN with URL + HTTP status whenever a scraper returns 0.
-function auditScraper(name, url, status, candidates, jobs) {
-  if (process.env.SCRAPER_DEBUG !== "0") {
+function auditScraper(name, url, status, candidates, jobs, dump = true) {
+  if (dump && process.env.SCRAPER_DEBUG !== "0") {
     const first3 = jobs.slice(0, 3).map(j => ({ title: j.title, company: j.company, location: j.location }));
     console.log(`🔎 ${name}: ${candidates} candidate elements, ${jobs.length} jobs parsed. First 3: ${JSON.stringify(first3)}`);
   }
@@ -104,7 +104,7 @@ async function scrapeMBW() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`MBW: scraped ${unique.length} jobs`);
-    auditScraper("MBW", MBW_URL, status, $("ul li a strong").length, unique);
+    auditScraper("MBW", MBW_URL, status, $("ul li a strong").length, unique, false);
     return unique;
   } catch (e) {
     console.warn(`⚠️ WARN: MBW returned 0 jobs — url=${MBW_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
@@ -120,14 +120,22 @@ async function scrapeROSTR() {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     });
     const page = await context.newPage();
+    // networkidle timed out at 45s on this site (long-polling/analytics keep
+    // the network busy) — wait for DOM, then for the job cards themselves
     const rostrResp = await page.goto("https://jobs.rostr.cc/", {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
       timeout: 45000,
     });
-    await page.waitForTimeout(5000);
+    const rostrStatus = rostrResp ? rostrResp.status() : "n/a";
+    try {
+      await page.waitForSelector('a[href^="/job/"]', { timeout: 20000 });
+    } catch (waitErr) {
+      const pageTitle = await page.title().catch(() => "?");
+      const bodyText = await page.evaluate(() => (document.body?.innerText || "").slice(0, 500)).catch(() => "");
+      console.warn(`⚠️ WARN: ROSTR job cards never appeared — status=${rostrStatus} pageTitle=${JSON.stringify(pageTitle)} body=${JSON.stringify(bodyText)}`);
+    }
     const jobs = [];
     const jobCards = await page.$$('a[href^="/job/"]');
-    const rostrStatus = rostrResp ? rostrResp.status() : "n/a";
     for (const card of jobCards) {
       const title = await card.$eval(".position", el => el.textContent.trim()).catch(() => "");
       const company = await card.$eval(".company", el => el.textContent.trim()).catch(() => "");
@@ -178,7 +186,7 @@ async function scrapeDoorsOpen() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Doors Open: scraped ${unique.length} jobs`);
-    auditScraper("Doors Open", DOORS_OPEN_URL, status, $("article.listing-item, .listing-item, article.media").length, unique);
+    auditScraper("Doors Open", DOORS_OPEN_URL, status, $("article.listing-item, .listing-item, article.media").length, unique, false);
     return unique;
   } catch (e) {
     console.warn(`⚠️ WARN: Doors Open returned 0 jobs — url=${DOORS_OPEN_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
@@ -208,7 +216,7 @@ async function scrapeDigilogue() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Digilogue: scraped ${unique.length} jobs`);
-    auditScraper("Digilogue", DIGILOGUE_URL, status, $("a[href*='apply'], .w-dyn-item, [class*='job']").length, unique);
+    auditScraper("Digilogue", DIGILOGUE_URL, status, $("a[href*='apply'], .w-dyn-item, [class*='job']").length, unique, false);
     return unique;
   } catch (e) {
     console.warn(`⚠️ WARN: Digilogue returned 0 jobs — url=${DIGILOGUE_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
