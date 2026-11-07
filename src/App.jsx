@@ -276,7 +276,7 @@ Return ONLY the JSON object.`;
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
+          // model is set server-side (SCORING_MODEL) by the /api/analyze proxy
           max_tokens: 1000,
           system: SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }]

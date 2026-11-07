@@ -768,12 +768,13 @@ async function scrapeAllJobs() {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-// Anthropic API proxy (fixes CORS)
+// Anthropic API proxy (fixes CORS). The model is forced server-side so a
+// stale hardcoded model in the frontend bundle can never break scoring.
 app.post("/api/analyze", async (req, res) => {
   try {
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
-      req.body,
+      { ...req.body, model: SCORING_MODEL },
       {
         headers: {
           "Content-Type": "application/json",
