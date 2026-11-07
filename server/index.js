@@ -537,6 +537,48 @@ async function scoreJob(job) {
   }
 }
 
+// ─── Location filter (two-stage) ──────────────────────────────────────────────
+// Stage 1 rejects anything that names a non-California place, regardless of
+// what else the string says. Stage 2 then requires a positive California
+// signal, or a bare country-wide "Remote" with no location qualifier.
+
+// Full names of the other 49 US states (plus DC)
+const NON_CA_STATE_NAMES = /\b(Alabama|Alaska|Arizona|Arkansas|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia)\b/i;
+// State abbreviations only when comma-prefixed ("Nashville, TN") so that
+// standalone "LA" (Los Angeles), "OR"/"IN"/"HI" as words, etc. don't false-hit
+const NON_CA_STATE_ABBRS = /,\s*(AL|AK|AZ|AR|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b/;
+const NON_US_PLACES = /\b(UK|United Kingdom|England|Scotland|Wales|Ireland|EU|Europe|London|Italy|France|Germany|Spain|Portugal|Netherlands|Belgium|Austria|Switzerland|Sweden|Norway|Denmark|Finland|Poland|Czechia|Czech Republic|Hungary|Romania|Greece|Malaysia|Philippines|Singapore|Indonesia|Thailand|Vietnam|India|China|Japan|Korea|Taiwan|Hong Kong|Australia|New Zealand|Brazil|Mexico|Argentina|Chile|Colombia|Peru|Canada|South Africa|Nigeria|Egypt|Israel|Turkey|UAE|Dubai|Saudi Arabia)\b/i;
+// Canadian "City, XX, CA" (province, country) false positives
+const CANADA_PATTERN = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
+
+// Positive California signal
+const CA_PATTERN = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
+// Country-wide remote with no narrower qualifier: "Remote", "Remote, Remote",
+// "Remote - US", "United States", "Remote - United States"
+const BARE_REMOTE_PATTERN = /^\s*(remote([\s,\/–—-]+(remote|us|usa|u\.s\.a?\.?|united states))?|(us|usa|united states)([\s,\/–—-]+remote)?)\s*$/i;
+
+// TODO: set to false (or delete the sampling) once the filter rules have been
+// verified against real scrapes — kept on for the first few deploys.
+const LOG_REJECTED_LOCATIONS = true;
+
+function filterByLocation(jobs) {
+  const kept = [];
+  const rejected = [];
+  for (const j of jobs) {
+    const loc = j.location || "";
+    const stage1Reject =
+      !loc ||
+      NON_CA_STATE_NAMES.test(loc) ||
+      NON_CA_STATE_ABBRS.test(loc) ||
+      NON_US_PLACES.test(loc) ||
+      CANADA_PATTERN.test(loc);
+    const stage2Accept = CA_PATTERN.test(loc) || BARE_REMOTE_PATTERN.test(loc);
+    if (!stage1Reject && stage2Accept) kept.push(j);
+    else rejected.push(j);
+  }
+  return { kept, rejected };
+}
+
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
 // Lock auto-releases after this long, so a hung/crashed scrape can't block
 // future runs forever (the stuck-lock bug that froze the tracker).
@@ -574,11 +616,14 @@ async function scrapeAllJobs() {
     );
     console.log(`Title filter: ${realJobs.length - titleKept.length} excluded, ${titleKept.length} remaining`);
 
-    // Keep only California jobs — exclude Canadian "XX, CA" (province, country) false positives
-    const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale|Remote|United States/i;
-    const canadaPattern = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
-    const caJobs = titleKept.filter((j) => j.location && caPattern.test(j.location) && !canadaPattern.test(j.location));
-    console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
+    // Two-stage location filter: reject anything naming a non-CA place, then
+    // require a positive CA signal or a bare country-wide Remote
+    const { kept: caJobs, rejected: locRejected } = filterByLocation(titleKept);
+    console.log(`📍 Location filter: ${caJobs.length}/${titleKept.length} jobs kept`);
+    if (LOG_REJECTED_LOCATIONS && locRejected.length) {
+      const sample = locRejected.slice(0, 10).map((j) => JSON.stringify(j.location || ""));
+      console.log(`📍 Rejected location samples (${locRejected.length} total): ${sample.join(", ")}`);
+    }
 
     // Preserve existing scores from cache
     const existingCache = loadCache();
