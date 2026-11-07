@@ -40,6 +40,12 @@ const SOURCES = [
   { id: "livenation",name: "Live Nation",         url: "https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite", color: "#FEE440" },
   { id: "spotify",   name: "Spotify",            url: "https://www.lifeatspotify.com/jobs",                    color: "#1DB954" },
   { id: "apple",     name: "Apple Music",        url: "https://jobs.apple.com/en-us/search?product=apple-music-APPMU", color: "#A8A9AD" },
+  { id: "suno",      name: "Suno",               url: "https://suno.com/careers",                              color: "#FF5CAA" },
+  { id: "hybe",      name: "HYBE America",       url: "https://hybecorp.com/eng/career",                       color: "#7B2CBF" },
+  { id: "createmusic", name: "Create Music Group", url: "https://createmusicgroup.com/careers",                color: "#40916C" },
+  { id: "audiomack", name: "Audiomack",          url: "https://audiomack.com/about/jobs",                      color: "#FFA62B" },
+  { id: "redbull",   name: "Red Bull",           url: "https://jobs.redbull.com/us-en",                        color: "#DB0A40" },
+  { id: "manual",    name: "Manual",             url: "",                                                      color: "#CDB4DB" },
 ];
 
 const SYSTEM_PROMPT = `You are a music industry recruiter AI scoring job postings against a candidate profile.
@@ -112,22 +118,29 @@ function Spinner() {
   );
 }
 
-const statusColors = { applied: "#00FF87", saved: "#3A86FF", dismissed: "#666" };
-const statusLabels = { applied: "APPLIED", saved: "SAVED", dismissed: "DISMISSED" };
+const STATUS_OPTIONS = [
+  { value: "none", label: "— status —" },
+  { value: "saved", label: "Saved" },
+  { value: "applied", label: "Applied" },
+  { value: "screen", label: "Screen" },
+  { value: "interview", label: "Interview" },
+  { value: "offer", label: "Offer" },
+  { value: "rejected", label: "Rejected" },
+  { value: "closed", label: "Closed" },
+];
+// Active pipeline = anything with a status outside none/closed/rejected
+const ACTIVE_STATUSES = ["saved", "applied", "screen", "interview", "offer"];
+const statusColors = {
+  saved: "#3A86FF", applied: "#00FF87", screen: "#FF9F1C", interview: "#8338EC",
+  offer: "#06D6A0", rejected: "#E63946", closed: "#666", dismissed: "#666",
+};
+const statusLabels = {
+  saved: "SAVED", applied: "APPLIED", screen: "SCREEN", interview: "INTERVIEW",
+  offer: "OFFER", rejected: "REJECTED", closed: "CLOSED", dismissed: "CLOSED",
+};
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
-function StatusButton({ label, color, active, onClick }) {
-  return (
-    <button onClick={onClick} style={{
-      fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "4px 12px", borderRadius: 4,
-      cursor: "pointer", transition: "all 0.2s",
-      background: active ? color + "22" : "transparent",
-      color: active ? color : "rgba(255,255,255,0.4)",
-      border: `1px solid ${active ? color + "66" : "rgba(255,255,255,0.1)"}`,
-    }}>{label}</button>
-  );
-}
-
-function JobCard({ job, onRemove, onStatusChange }) {
+function JobCard({ job, onRemove, onUpdate }) {
   const [expanded, setExpanded] = useState(false);
   const source = SOURCES.find(s => s.id === job.source);
   return (
@@ -179,11 +192,11 @@ function JobCard({ job, onRemove, onStatusChange }) {
           style={{ background: "none", border: "none", color: "rgba(255,255,255,0.2)",
             cursor: "pointer", fontSize: 18, padding: 4, flexShrink: 0 }}>×</button>
       </div>
-      {expanded && job.result && (
+      {expanded && (
         <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-          <p style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "rgba(255,255,255,0.6)",
-            marginBottom: 14, lineHeight: 1.6 }}>{job.result.headline}</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+          {job.result && <p style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "rgba(255,255,255,0.6)",
+            marginBottom: 14, lineHeight: 1.6 }}>{job.result.headline}</p>}
+          {job.result && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
             <div>
               <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#00FF87",
                 marginBottom: 6, letterSpacing: "0.08em" }}>MATCHED SKILLS</div>
@@ -200,7 +213,7 @@ function JobCard({ job, onRemove, onStatusChange }) {
                   color: "rgba(255,255,255,0.55)", padding: "2px 0" }}>· {g}</div>
               )) : <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", fontFamily: "'DM Sans',sans-serif" }}>None identified</div>}
             </div>
-          </div>
+          </div>}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             {job.url && (
               <a href={job.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
@@ -211,12 +224,23 @@ function JobCard({ job, onRemove, onStatusChange }) {
               </a>
             )}
             <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
-            <StatusButton label="Applied" color="#00FF87" active={job.status === "applied"}
-              onClick={e => { e.stopPropagation(); onStatusChange(job.id, job.status === "applied" ? null : "applied"); }} />
-            <StatusButton label="Saved" color="#3A86FF" active={job.status === "saved"}
-              onClick={e => { e.stopPropagation(); onStatusChange(job.id, job.status === "saved" ? null : "saved"); }} />
-            <StatusButton label="Dismiss" color="#666" active={job.status === "dismissed"}
-              onClick={e => { e.stopPropagation(); onStatusChange(job.id, job.status === "dismissed" ? null : "dismissed"); }} />
+            <select value={job.status || "none"}
+              onClick={e => e.stopPropagation()}
+              onChange={e => { e.stopPropagation(); onUpdate(job.id, { status: e.target.value, statusDate: todayISO() }); }}
+              style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "5px 8px", borderRadius: 6,
+                background: "#0F1419", color: job.status ? (statusColors[job.status] || "white") : "rgba(255,255,255,0.5)",
+                border: `1px solid ${job.status ? (statusColors[job.status] || "#444") + "66" : "rgba(255,255,255,0.15)"}`, cursor: "pointer" }}>
+              {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            {job.statusDate && job.status && (
+              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{job.statusDate.slice(0, 10)}</span>
+            )}
+            <input key={`${job.id}-notes`} defaultValue={job.notes || ""} placeholder="notes…"
+              onClick={e => e.stopPropagation()}
+              onBlur={e => { if (e.target.value !== (job.notes || "")) onUpdate(job.id, { notes: e.target.value }); }}
+              style={{ flex: 1, minWidth: 140, fontFamily: "'DM Sans',sans-serif", fontSize: 12, padding: "6px 10px",
+                borderRadius: 6, background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.75)",
+                border: "1px solid rgba(255,255,255,0.1)", outline: "none" }} />
           </div>
         </div>
       )}
@@ -226,7 +250,8 @@ function JobCard({ job, onRemove, onStatusChange }) {
 
 export default function App() {
   const [jobs, setJobs] = useState([]);
-  const [form, setForm] = useState({ title: "", company: "", location: "", source: "mbw", url: "", description: "" });
+  const emptyForm = { title: "", company: "", location: "", url: "", description: "", status: "none", statusDate: todayISO(), notes: "" };
+  const [form, setForm] = useState(emptyForm);
   const [tab, setTab] = useState("tracker");
   const [scraping, setScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState("");
@@ -251,14 +276,14 @@ export default function App() {
     refreshHealth();
   }, [refreshHealth]);
 
-  const visibleJobs = jobs.filter(j => j.status !== "dismissed");
+  const visibleJobs = jobs.filter(j => j.status !== "dismissed" && j.status !== "closed");
   const relevantJobs = visibleJobs.filter(j => !j.result || j.result.score >= 25);
   const scoredRelevant = relevantJobs.filter(j => j.result);
   const stats = {
     total: relevantJobs.length,
     excellent: visibleJobs.filter(j => j.result?.tier === "Excellent Match").length,
     good: visibleJobs.filter(j => j.result?.tier === "Good Match").length,
-    applied: jobs.filter(j => j.status === "applied").length,
+    pipeline: jobs.filter(j => ACTIVE_STATUSES.includes(j.status)).length,
     avgScore: scoredRelevant.length
       ? Math.round(scoredRelevant.reduce((a, b) => a + b.result.score, 0) / scoredRelevant.length)
       : 0
@@ -292,11 +317,27 @@ Return ONLY the JSON object.`;
 
   const handleManualAdd = async () => {
     if (!form.title || !form.company) return;
-    const newJob = { ...form, id: Date.now(), addedAt: new Date().toISOString(), result: null, auto: false };
-    setJobs(prev => [newJob, ...prev]);
-    setForm({ title: "", company: "", location: "", source: "mbw", url: "", description: "" });
-    const result = await analyzeJob(newJob);
-    setJobs(prev => prev.map(j => j.id === newJob.id ? { ...j, result } : j));
+    const payload = { ...form };
+    setForm(emptyForm);
+    // Score like any scraped job when a JD was pasted
+    const result = payload.description ? await analyzeJob(payload) : null;
+    try {
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, result }),
+      });
+      const data = await res.json();
+      if (data.job) {
+        setJobs(prev => [{ ...data.job, auto: false }, ...prev]);
+      } else {
+        setScrapeStatus(`❌ ${data.error || "Could not save entry"}`);
+        setTimeout(() => setScrapeStatus(""), 5000);
+      }
+    } catch (e) {
+      setScrapeStatus("❌ Could not save entry — is the server running?");
+      setTimeout(() => setScrapeStatus(""), 5000);
+    }
   };
 
   const handleFetchJobs = async () => {
@@ -321,22 +362,26 @@ Return ONLY the JSON object.`;
 
   const removeJob = (id) => setJobs(prev => prev.filter(j => j.id !== id));
 
-  const handleStatusChange = async (jobId, status) => {
-    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status } : j));
-    await fetch("/api/job-status", {
-      method: "POST",
+  const handleUpdate = async (jobId, fields) => {
+    const applied = { ...fields };
+    if (applied.status === "none") applied.status = null;
+    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...applied } : j));
+    await fetch(`/api/jobs/${jobId}`, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId, status }),
-    });
+      body: JSON.stringify(fields),
+    }).catch(() => {});
   };
 
   const filtered = [...jobs]
-    .filter(j => j.status !== "dismissed") // hide dismissed
+    .filter(j => j.status !== "dismissed" && j.status !== "closed") // hide closed-out entries
     .filter(j => !j.result || j.result.score >= 25) // hide scored jobs below 25
     .filter(j => {
       if (filter === "all") return true;
       if (filter === "applied") return j.status === "applied";
-      if (filter === "saved") return j.status === "saved";
+      if (filter === "screen") return j.status === "screen";
+      if (filter === "interview") return j.status === "interview";
+      if (filter === "pipeline") return ACTIVE_STATUSES.includes(j.status);
       if (filter === "director+") return DIRECTOR_PLUS.test(j.title);
       return j.result?.tier === filter;
     })
@@ -402,7 +447,7 @@ Return ONLY the JSON object.`;
                   { label: "TOTAL", value: stats.total, color: "rgba(255,255,255,0.7)" },
                   { label: "EXCELLENT", value: stats.excellent, color: "#00FF87" },
                   { label: "GOOD MATCH", value: stats.good, color: "#2EC4B6" },
-                  { label: "APPLIED", value: stats.applied, color: "#00FF87" },
+                  { label: "PIPELINE", value: stats.pipeline, color: "#00FF87" },
                   { label: "AVG SCORE", value: stats.avgScore || "—", color: "#FF9F1C",
                     sub: health ? `Scored ${health.scoredJobs}/${health.cachedJobs}` : null,
                     subColor: scoreHealth?.failureCount > 0 ? "#E63946" : "rgba(255,255,255,0.35)" },
@@ -452,14 +497,21 @@ Return ONLY the JSON object.`;
                   <input value={form.location} placeholder="Location" onChange={e => setForm(p => ({ ...p, location: e.target.value }))} style={inputStyle} />
                   <input value={form.url} placeholder="Job URL (optional)" onChange={e => setForm(p => ({ ...p, url: e.target.value }))} style={inputStyle} />
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 10, marginBottom: 14 }}>
-                  <select value={form.source} onChange={e => setForm(p => ({ ...p, source: e.target.value }))}
-                    style={{ ...inputStyle, fontFamily: "'DM Mono',monospace", background: "#0F1419" }}>
-                    {SOURCES.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    <option value="other">Other</option>
-                  </select>
+                <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 10, marginBottom: 10 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}
+                      style={{ ...inputStyle, fontFamily: "'DM Mono',monospace", background: "#0F1419" }}>
+                      {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <input type="date" value={form.statusDate} onChange={e => setForm(p => ({ ...p, statusDate: e.target.value }))}
+                      style={{ ...inputStyle, fontFamily: "'DM Mono',monospace", colorScheme: "dark" }} />
+                  </div>
                   <textarea value={form.description} placeholder="Paste job description for best accuracy (optional but recommended)"
                     onChange={e => setForm(p => ({ ...p, description: e.target.value }))} rows={3} style={inputStyle} />
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <input value={form.notes} placeholder="Notes (recruiter, referral, next step…)"
+                    onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} style={inputStyle} />
                 </div>
                 <button onClick={handleManualAdd} disabled={!form.title || !form.company} style={{
                   background: form.title && form.company ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
@@ -499,7 +551,12 @@ Return ONLY the JSON object.`;
                     Director+
                   </button>
                   <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
-                  {[{ key: "applied", label: "Applied", color: "#00FF87" }, { key: "saved", label: "Saved", color: "#3A86FF" }].map(f => (
+                  {[
+                    { key: "pipeline", label: "Pipeline", color: "#06D6A0" },
+                    { key: "applied", label: "Applied", color: "#00FF87" },
+                    { key: "screen", label: "Screen", color: "#FF9F1C" },
+                    { key: "interview", label: "Interview", color: "#8338EC" },
+                  ].map(f => (
                     <button key={f.key} onClick={() => setFilter(f.key)} style={{
                       fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "6px 14px", borderRadius: 20,
                       cursor: "pointer", border: "1px solid",
@@ -529,7 +586,7 @@ Return ONLY the JSON object.`;
                   <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "0.1em", marginBottom: 14 }}>
                     {filtered.length} JOB{filtered.length !== 1 ? "S" : ""} · SORTED BY MATCH SCORE
                   </div>
-                  {filtered.map(job => <JobCard key={job.id} job={job} onRemove={removeJob} onStatusChange={handleStatusChange} />)}
+                  {filtered.map(job => <JobCard key={job.id} job={job} onRemove={removeJob} onUpdate={handleUpdate} />)}
                 </div>
               )}
             </div>
@@ -539,7 +596,7 @@ Return ONLY the JSON object.`;
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 700, marginBottom: 6, color: "rgba(255,255,255,0.85)" }}>Job Board Sources</div>
               <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "rgba(255,255,255,0.4)", marginBottom: 24 }}>
-                All 11 tracked music industry job boards and their access status
+                All {SOURCES.length} tracked music industry job boards and their access status
               </div>
               {SOURCES.map(s => {
                 const info = {
@@ -555,9 +612,15 @@ Return ONLY the JSON object.`;
                   concord:   { status: "✓ Auto-Scraped",        note: "iCIMS platform, filtered to marketing roles.", ok: true },
                   bmg:       { status: "✓ Auto-Scraped",        note: "Playwright scraper with city-pattern splitter.", ok: true },
                   livenation:{ status: "✓ Auto-Scraped",        note: "Workday API (wd503) — 1,441 jobs paginated, CA filter applied.", ok: true },
-                  spotify:   { status: "⚠ JS-Rendered",         note: "Dynamic Next.js app. Browse manually at lifeatspotify.com.", ok: false },
+                  spotify:   { status: "✓ Auto-Scraped",        note: "Greenhouse API board. Slug pending confirmation from first scrape log.", ok: true },
                   apple:     { status: "⚠ JS-Rendered",         note: "Pre-filtered to Apple Music roles. Bookmark and check manually.", ok: false },
-                }[s.id];
+                  suno:      { status: "✓ Auto-Scraped",        note: "Greenhouse API board.", ok: true },
+                  hybe:      { status: "✓ Auto-Scraped",        note: "Greenhouse API board (HYBE America).", ok: true },
+                  createmusic: { status: "✓ Auto-Scraped",      note: "Greenhouse API board.", ok: true },
+                  audiomack: { status: "✓ Auto-Scraped",        note: "Lever API board.", ok: true },
+                  redbull:   { status: "✓ Auto-Scraped",        note: "Lever API board (Red Bull).", ok: true },
+                  manual:    { status: "✎ Manual",              note: "Recruiter and direct-outreach applications entered by hand.", ok: true },
+                }[s.id] || { status: "—", note: "", ok: false };
                 return (
                   <div key={s.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
                     borderLeft: `3px solid ${s.color}`, borderRadius: 12, padding: "18px 20px", marginBottom: 10 }}>
