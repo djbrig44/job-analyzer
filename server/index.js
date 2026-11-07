@@ -52,9 +52,22 @@ function saveCache(data) {
 }
 
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
+// Audit logging for the aggregator scrapers: candidate-element counts and the
+// first 3 parsed jobs (set SCRAPER_DEBUG=0 to silence once selectors are
+// verified), plus a WARN with URL + HTTP status whenever a scraper returns 0.
+function auditScraper(name, url, status, candidates, jobs) {
+  if (process.env.SCRAPER_DEBUG !== "0") {
+    const first3 = jobs.slice(0, 3).map(j => ({ title: j.title, company: j.company, location: j.location }));
+    console.log(`🔎 ${name}: ${candidates} candidate elements, ${jobs.length} jobs parsed. First 3: ${JSON.stringify(first3)}`);
+  }
+  if (jobs.length === 0) {
+    console.warn(`⚠️ WARN: ${name} returned 0 jobs — url=${url} status=${status ?? "n/a"} candidateElements=${candidates}`);
+  }
+}
+const MBW_URL = "https://www.musicbusinessworldwide.com/jobs/";
 async function scrapeMBW() {
   try {
-    const { data } = await axios.get("https://www.musicbusinessworldwide.com/jobs/", {
+    const { data, status } = await axios.get(MBW_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 15000,
     });
@@ -90,9 +103,10 @@ async function scrapeMBW() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`MBW: scraped ${unique.length} jobs`);
+    auditScraper("MBW", MBW_URL, status, $("ul li a strong").length, unique);
     return unique;
   } catch (e) {
-    console.error("MBW scrape error:", e.message);
+    console.warn(`⚠️ WARN: MBW returned 0 jobs — url=${MBW_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
@@ -105,13 +119,14 @@ async function scrapeROSTR() {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     });
     const page = await context.newPage();
-    await page.goto("https://jobs.rostr.cc/", {
+    const rostrResp = await page.goto("https://jobs.rostr.cc/", {
       waitUntil: "networkidle",
       timeout: 45000,
     });
     await page.waitForTimeout(5000);
     const jobs = [];
     const jobCards = await page.$$('a[href^="/job/"]');
+    const rostrStatus = rostrResp ? rostrResp.status() : "n/a";
     for (const card of jobCards) {
       const title = await card.$eval(".position", el => el.textContent.trim()).catch(() => "");
       const company = await card.$eval(".company", el => el.textContent.trim()).catch(() => "");
@@ -129,18 +144,20 @@ async function scrapeROSTR() {
     const seen = new Set();
     const unique = withIds.filter((j) => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`ROSTR: scraped ${unique.length} jobs`);
+    auditScraper("ROSTR", "https://jobs.rostr.cc/", rostrStatus, jobCards.length, unique);
     return unique;
   } catch (e) {
-    console.error("ROSTR scrape error:", e.message);
+    console.warn(`⚠️ WARN: ROSTR returned 0 jobs — url=https://jobs.rostr.cc/ status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
 }
 
+const DOORS_OPEN_URL = "https://www.doorsopen.co/jobs/";
 async function scrapeDoorsOpen() {
   try {
-    const { data } = await axios.get("https://www.doorsopen.co/jobs/", {
+    const { data, status } = await axios.get(DOORS_OPEN_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
@@ -160,16 +177,18 @@ async function scrapeDoorsOpen() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Doors Open: scraped ${unique.length} jobs`);
+    auditScraper("Doors Open", DOORS_OPEN_URL, status, $("article.listing-item, .listing-item, article.media").length, unique);
     return unique;
   } catch (e) {
-    console.error("Doors Open scrape error:", e.message);
+    console.warn(`⚠️ WARN: Doors Open returned 0 jobs — url=${DOORS_OPEN_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
 
+const DIGILOGUE_URL = "https://www.thedigilogue.com/career-listings";
 async function scrapeDigilogue() {
   try {
-    const { data } = await axios.get("https://www.thedigilogue.com/career-listings", {
+    const { data, status } = await axios.get(DIGILOGUE_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
@@ -188,9 +207,10 @@ async function scrapeDigilogue() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Digilogue: scraped ${unique.length} jobs`);
+    auditScraper("Digilogue", DIGILOGUE_URL, status, $("a[href*='apply'], .w-dyn-item, [class*='job']").length, unique);
     return unique;
   } catch (e) {
-    console.error("Digilogue scrape error:", e.message);
+    console.warn(`⚠️ WARN: Digilogue returned 0 jobs — url=${DIGILOGUE_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
@@ -325,9 +345,10 @@ async function scrapeUMG() {
   return merged;
 }
 
+const CONCORD_URL = "https://careers-concord.icims.com/jobs/search?ss=1&searchKeyword=marketing&in_iframe=1";
 async function scrapeConcord() {
   try {
-    const { data } = await axios.get("https://careers-concord.icims.com/jobs/search?ss=1&searchKeyword=marketing&in_iframe=1", {
+    const { data, status } = await axios.get(CONCORD_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; JobTracker/1.0)" },
       timeout: 10000,
     });
@@ -355,9 +376,10 @@ async function scrapeConcord() {
     const seen = new Set();
     const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
     console.log(`Concord: scraped ${unique.length} jobs`);
+    auditScraper("Concord", CONCORD_URL, status, $(".iCIMS_JobsTable a[href*='/jobs/']").length, unique);
     return unique;
   } catch (e) {
-    console.error("Concord scrape error:", e.message);
+    console.warn(`⚠️ WARN: Concord returned 0 jobs — url=${CONCORD_URL} status=${e.response?.status || "ERR"}: ${e.message}`);
     return [];
   }
 }
@@ -481,13 +503,29 @@ async function fetchJobDescription(url) {
     const bodyText = $("body").text().replace(/\s+/g, " ").trim();
     return bodyText.length > 100 ? bodyText.substring(0, 3000) : "";
   } catch (e) {
+    console.warn(`JD fetch failed for ${url} [${e.response?.status || "no-status"}]: ${e.message}`);
     return "";
   }
 }
 
 // Model used for auto-scoring. Pinned dated models get retired over time — a
 // retired model 404s and every score comes back null (all jobs show a spinner).
-const SCORING_MODEL = "claude-sonnet-5";
+// Overridable via env so a model swap doesn't need a code deploy.
+const SCORING_MODEL = process.env.SCORING_MODEL || "claude-sonnet-5-5";
+
+// Rolling health of the scoring pipeline, exposed at /api/score-health.
+// Counters cover the current/most recent scoring run (reset at run start).
+const _scoreHealth = {
+  lastAttemptAt: null,
+  successCount: 0,
+  failureCount: 0,
+  lastError: null,
+};
+function resetScoreHealthRun() {
+  _scoreHealth.successCount = 0;
+  _scoreHealth.failureCount = 0;
+  _scoreHealth.lastError = null;
+}
 
 async function scoreJob(job) {
   const prompt = `Analyze this job posting:\nTITLE: ${job.title}\nCOMPANY: ${job.company}\nLOCATION: ${job.location || "Not specified"}\nDESCRIPTION: ${job.description || "No description — score based on title and company only."}\nReturn ONLY the JSON object.`;
@@ -506,13 +544,112 @@ async function scoreJob(job) {
       timeout: 30000,
     });
     const text = res.data.content?.find(b => b.type === "text")?.text || "{}";
-    return JSON.parse(text.replace(/```json|```/g, "").trim());
+    const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    _scoreHealth.lastAttemptAt = new Date().toISOString();
+    _scoreHealth.successCount++;
+    return parsed;
   } catch (e) {
     const status = e.response?.status;
-    const apiErr = e.response?.data?.error?.message || e.message;
+    const apiErr = JSON.stringify(e.response?.data?.error || e.response?.data) || e.message;
+    _scoreHealth.lastAttemptAt = new Date().toISOString();
+    _scoreHealth.failureCount++;
+    _scoreHealth.lastError = `[${status || "no-status"}] ${e.response?.data?.error?.message || e.message}`;
     console.error(`Score error for "${job.title}" [${status || "no-status"}]: ${apiErr}`);
     return null;
   }
+}
+
+// ─── Location filter (two-stage) ──────────────────────────────────────────────
+// Stage 1 rejects anything that names a non-California place, regardless of
+// what else the string says. Stage 2 then requires a positive California
+// signal, or a bare country-wide "Remote" with no location qualifier.
+
+// Full names of the other 49 US states (plus DC)
+const NON_CA_STATE_NAMES = /\b(Alabama|Alaska|Arizona|Arkansas|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia)\b/i;
+// State abbreviations only when comma-prefixed ("Nashville, TN") so that
+// standalone "LA" (Los Angeles), "OR"/"IN"/"HI" as words, etc. don't false-hit
+const NON_CA_STATE_ABBRS = /,\s*(AL|AK|AZ|AR|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b/;
+const NON_US_PLACES = /\b(UK|United Kingdom|England|Scotland|Wales|Ireland|EU|Europe|London|Italy|France|Germany|Spain|Portugal|Netherlands|Belgium|Austria|Switzerland|Sweden|Norway|Denmark|Finland|Poland|Czechia|Czech Republic|Hungary|Romania|Greece|Malaysia|Philippines|Singapore|Indonesia|Thailand|Vietnam|India|China|Japan|Korea|Taiwan|Hong Kong|Australia|New Zealand|Brazil|Mexico|Argentina|Chile|Colombia|Peru|Canada|South Africa|Nigeria|Egypt|Israel|Turkey|UAE|Dubai|Saudi Arabia)\b/i;
+// Canadian "City, XX, CA" (province, country) false positives
+const CANADA_PATTERN = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
+
+// Positive California signal
+const CA_PATTERN = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale/i;
+// Country-wide remote with no narrower qualifier: "Remote", "Remote, Remote",
+// "Remote - US", "United States", "Remote - United States"
+const BARE_REMOTE_PATTERN = /^\s*(remote([\s,\/–—-]+(remote|us|usa|u\.s\.a?\.?|united states))?|(us|usa|united states)([\s,\/–—-]+remote)?)\s*$/i;
+
+// TODO: set to false (or delete the sampling) once the filter rules have been
+// verified against real scrapes — kept on for the first few deploys.
+const LOG_REJECTED_LOCATIONS = true;
+
+function filterByLocation(jobs) {
+  const kept = [];
+  const rejected = [];
+  for (const j of jobs) {
+    const loc = j.location || "";
+    const stage1Reject =
+      !loc ||
+      NON_CA_STATE_NAMES.test(loc) ||
+      NON_CA_STATE_ABBRS.test(loc) ||
+      NON_US_PLACES.test(loc) ||
+      CANADA_PATTERN.test(loc);
+    const stage2Accept = CA_PATTERN.test(loc) || BARE_REMOTE_PATTERN.test(loc);
+    if (!stage1Reject && stage2Accept) kept.push(j);
+    else rejected.push(j);
+  }
+  return { kept, rejected };
+}
+
+// ─── Cross-source dedup ───────────────────────────────────────────────────────
+// Same posting often arrives from an employer's own ATS and an aggregator.
+// Key = normalize(title) + "|" + normalize(company); a leading brand prefix in
+// the title ("Insomniac - Marketing Campaign Specialist" at Live Nation) is
+// stripped and used as the effective company so it collides with the
+// aggregator's copy (company "Insomniac", title "Marketing Campaign
+// Specialist"). On collision the employer-ATS copy wins and the loser's URL is
+// kept in altUrls.
+const ATS_SOURCES = new Set(["umg", "wmg", "sony", "livenation", "bmg", "concord"]);
+// Guard so a dash inside an ordinary title ("Sr. Manager - Digital Marketing")
+// is not mistaken for a brand prefix
+const ROLE_WORDS = /\b(manager|director|coordinator|vp|vice|president|head|chief|senior|sr|jr|junior|lead|principal|executive|specialist|analyst|assistant|associate|intern|officer|producer|engineer|designer|representative|supervisor)\b/i;
+
+function normalizeDedup(s) {
+  return (s || "").toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function dedupKey(job) {
+  let title = job.title || "";
+  let company = job.company || "";
+  const m = title.match(/^\s*([A-Za-z0-9&.'\s]{2,40}?)\s*[-–—:|]\s+(.{5,})$/);
+  if (m && !ROLE_WORDS.test(m[1])) {
+    title = m[2];
+    company = m[1];
+  }
+  return normalizeDedup(title) + "|" + normalizeDedup(company);
+}
+
+function dedupJobs(jobs) {
+  const byKey = new Map();
+  let merged = 0;
+  for (const job of jobs) {
+    const key = dedupKey(job);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, job);
+      continue;
+    }
+    merged++;
+    const jobIsATS = ATS_SOURCES.has(job.source);
+    const existingIsATS = ATS_SOURCES.has(existing.source);
+    const keeper = jobIsATS && !existingIsATS ? job : existing;
+    const loser = keeper === job ? existing : job;
+    keeper.altUrls = [...new Set([...(keeper.altUrls || []), ...(loser.altUrls || []), loser.url])].filter(
+      (u) => u && u !== keeper.url
+    );
+    byKey.set(key, keeper);
+  }
+  return { jobs: [...byKey.values()], merged };
 }
 
 // ─── Run All Scrapers ─────────────────────────────────────────────────────────
@@ -520,6 +657,9 @@ async function scoreJob(job) {
 // future runs forever (the stuck-lock bug that froze the tracker).
 const SCRAPE_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 let _scrapeStartedAt = null;
+
+// The scrapers run on every scheduled scrape (order matches Promise.all below)
+const SCRAPER_SOURCES = ["mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony"];
 
 async function scrapeAllJobs() {
   if (_scrapeStartedAt) {
@@ -541,26 +681,46 @@ async function scrapeAllJobs() {
     // Filter out junk CTA entries
     const junkPattern = /have an open position|post a job|submit your|sign up|subscribe/i;
     const realJobs = allJobs.filter((j) => !junkPattern.test(j.title));
-    // Keep only California jobs — exclude Canadian "XX, CA" (province, country) false positives
-    const caPattern = /\bCA\b|California|Los Angeles|San Francisco|San Diego|Sacramento|Oakland|San Jose|Burbank|Hollywood|Santa Monica|Culver City|Beverly Hills|Calabasas|Irvine|Pasadena|Glendale|Remote|United States/i;
-    const canadaPattern = /,\s*(?:ON|BC|AB|QC|MB|SK|NS|NB|NL|PE|YT|NT|NU),\s*CA\b/i;
-    const caJobs = realJobs.filter((j) => j.location && caPattern.test(j.location) && !canadaPattern.test(j.location));
-    console.log(`📍 California filter: ${caJobs.length}/${allJobs.length} jobs matched`);
 
-    // Preserve existing scores from cache
-    const existingCache = loadCache();
-    const scoredMap = new Map();
-    for (const j of existingCache.jobs || []) {
-      if (j.result || j.status) scoredMap.set(j.id, { description: j.description, result: j.result, status: j.status });
+    // Title pre-filter: drop hourly venue/crew roles (bulk of Live Nation's
+    // feed) and sub-manager titles before location filtering and scoring.
+    // Excluded jobs are not stored at all.
+    const venueCrewPattern = /\b(security|bartender|barback|server|cook|chef|usher|ticket (taker|seller|agent)|stagehand|stage hand|janitorial|porter|cleaning|custodial|parking|dispatcher|merch(andise)? (staff|seller|cashier)|concessions|seasonal|intern(ship)?|runner|loader|maintenance|box office|guest services|hospitality|catering|food (runner|and beverage|& beverage))\b/i;
+    const juniorTitlePattern = /^\s*(coordinator|assistant|analyst|specialist|associate)\b/i;
+    const titleKept = realJobs.filter(
+      (j) => !venueCrewPattern.test(j.title) && !juniorTitlePattern.test(j.title)
+    );
+    console.log(`Title filter: ${realJobs.length - titleKept.length} excluded, ${titleKept.length} remaining`);
+
+    // Two-stage location filter: reject anything naming a non-CA place, then
+    // require a positive CA signal or a bare country-wide Remote
+    const { kept: caJobs, rejected: locRejected } = filterByLocation(titleKept);
+    console.log(`📍 Location filter: ${caJobs.length}/${titleKept.length} jobs kept`);
+    if (LOG_REJECTED_LOCATIONS && locRejected.length) {
+      const sample = locRejected.slice(0, 10).map((j) => JSON.stringify(j.location || ""));
+      console.log(`📍 Rejected location samples (${locRejected.length} total): ${sample.join(", ")}`);
     }
 
-    // Identify new/unscored jobs
+    // Collapse the same posting arriving from multiple sources
+    const { jobs: dedupedJobs, merged } = dedupJobs(caJobs);
+    console.log(`Dedup: ${merged} merged`);
+
+    // Preserve existing scores, statuses and firstSeen from cache
+    const existingCache = loadCache();
+    const existingById = new Map();
+    for (const j of existingCache.jobs || []) existingById.set(j.id, j);
+
+    // Identify new/unscored jobs; stamp firstSeen on insert and never
+    // overwrite it on later scrapes (legacy jobs without one are backdated to
+    // the cache's lastUpdated so they don't all light up as "New")
+    const nowIso = new Date().toISOString();
     const enrichedJobs = [];
     const toScore = [];
-    for (const job of caJobs) {
-      const existing = scoredMap.get(job.id);
-      if (existing) {
-        enrichedJobs.push({ ...job, description: existing.description, result: existing.result, status: existing.status });
+    for (const job of dedupedJobs) {
+      const prev = existingById.get(job.id);
+      job.firstSeen = prev ? (prev.firstSeen || existingCache.lastUpdated || nowIso) : nowIso;
+      if (prev && (prev.result || prev.status)) {
+        enrichedJobs.push({ ...job, description: prev.description, result: prev.result, status: prev.status });
       } else {
         enrichedJobs.push(job);
         toScore.push(job);
@@ -580,7 +740,8 @@ async function scrapeAllJobs() {
       const withJD = toScore.filter(j => j.description).length;
       console.log(`📄 JDs fetched: ${withJD}/${toScore.length} had extractable descriptions`);
 
-      console.log(`🤖 Scoring ${toScore.length} new jobs...`);
+      resetScoreHealthRun();
+      console.log(`🤖 Scoring ${toScore.length} new jobs with ${SCORING_MODEL}...`);
       for (let i = 0; i < toScore.length; i += 3) {
         const batch = toScore.slice(i, i + 3);
         const results = await Promise.all(batch.map(j => scoreJob(j)));
@@ -598,7 +759,7 @@ async function scrapeAllJobs() {
     const cache = { jobs: enrichedJobs, lastUpdated: new Date().toISOString() };
     saveCache(cache);
     const scored = enrichedJobs.filter(j => j.result).length;
-    console.log(`✅ Total saved: ${caJobs.length} CA jobs (${scored} scored)`);
+    console.log(`✅ Total saved: ${dedupedJobs.length} CA jobs (${scored} scored)`);
     return cache;
   } finally {
     _scrapeStartedAt = null;
@@ -607,12 +768,13 @@ async function scrapeAllJobs() {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-// Anthropic API proxy (fixes CORS)
+// Anthropic API proxy (fixes CORS). The model is forced server-side so a
+// stale hardcoded model in the frontend bundle can never break scoring.
 app.post("/api/analyze", async (req, res) => {
   try {
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
-      req.body,
+      { ...req.body, model: SCORING_MODEL },
       {
         headers: {
           "Content-Type": "application/json",
@@ -690,7 +852,73 @@ app.get("/api/debug-umg", async (req, res) => {
 // Health check
 app.get("/api/health", (req, res) => {
   const cache = loadCache();
-  res.json({ status: "ok", cachedJobs: cache.jobs.length, lastUpdated: cache.lastUpdated });
+  res.json({
+    status: "ok",
+    cachedJobs: cache.jobs.length,
+    scoredJobs: cache.jobs.filter(j => j.result).length,
+    sources: SCRAPER_SOURCES.length,
+    lastUpdated: cache.lastUpdated,
+  });
+});
+
+// Scoring pipeline health: last attempt, success/failure counts for the most
+// recent run, and the last error seen
+app.get("/api/score-health", (req, res) => {
+  const cache = loadCache();
+  res.json({
+    model: SCORING_MODEL,
+    lastAttemptAt: _scoreHealth.lastAttemptAt,
+    successCount: _scoreHealth.successCount,
+    failureCount: _scoreHealth.failureCount,
+    lastError: _scoreHealth.lastError,
+    unscoredJobs: cache.jobs.filter(j => !j.result).length,
+  });
+});
+
+// Re-score only jobs with result: null — avoids a full re-scrape when scoring
+// was broken but the scrape data is fine. Runs async; poll /api/score-health.
+app.post("/api/rescore", (req, res) => {
+  if (_scrapeStartedAt) {
+    return res.status(409).json({ error: "A scrape/rescore is already in progress." });
+  }
+  const cache = loadCache();
+  const toScore = cache.jobs.filter(j => !j.result);
+  if (toScore.length === 0) {
+    return res.json({ started: false, message: "All jobs already scored." });
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: "ANTHROPIC_API_KEY is not set — cannot score." });
+  }
+  res.json({ started: true, toScore: toScore.length, model: SCORING_MODEL });
+  // Run in background under the scrape lock so a cron scrape can't collide
+  _scrapeStartedAt = Date.now();
+  (async () => {
+    try {
+      resetScoreHealthRun();
+      console.log(`🔁 Rescore: ${toScore.length} unscored jobs with ${SCORING_MODEL}...`);
+      for (const job of toScore) {
+        if (!job.description) {
+          job.description = await fetchJobDescription(job.url);
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+      for (let i = 0; i < toScore.length; i += 3) {
+        const batch = toScore.slice(i, i + 3);
+        const results = await Promise.all(batch.map(j => scoreJob(j)));
+        for (let k = 0; k < batch.length; k++) batch[k].result = results[k];
+        if ((i / 3) % 10 === 0) console.log(`  Rescored ${Math.min(i + 3, toScore.length)}/${toScore.length}`);
+      }
+      // toScore entries reference the same objects as cache.jobs, so saving
+      // the cache persists the new results
+      cache.lastUpdated = new Date().toISOString();
+      saveCache(cache);
+      console.log(`🔁 Rescore done: ${_scoreHealth.successCount} scored, ${_scoreHealth.failureCount} failed`);
+    } catch (e) {
+      console.error("Rescore error:", e.message);
+    } finally {
+      _scrapeStartedAt = null;
+    }
+  })();
 });
 
 // Catch-all for frontend in production
@@ -722,6 +950,32 @@ cron.schedule("0 */6 * * *", () => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🤖 Scoring model: ${SCORING_MODEL}`);
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error("🚨 ANTHROPIC_API_KEY IS NOT SET — jobs will be scraped but NEVER scored. Set it in Railway variables.");
+  } else {
+    // Probe the key + model once so auth/model problems are visible at boot
+    axios.post("https://api.anthropic.com/v1/messages", {
+      model: SCORING_MODEL, max_tokens: 1, messages: [{ role: "user", content: "ping" }],
+    }, {
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      timeout: 15000,
+    }).then(() => {
+      console.log(`✅ Anthropic API key + model "${SCORING_MODEL}" verified`);
+    }).catch((e) => {
+      const status = e.response?.status;
+      const msg = e.response?.data?.error?.message || e.message;
+      if (status === 401 || status === 403) {
+        console.error(`🚨 ANTHROPIC_API_KEY IS INVALID [${status}]: ${msg} — scoring will fail until the key is fixed.`);
+      } else {
+        console.error(`🚨 Scoring probe failed [${status || "no-status"}]: ${msg}`);
+      }
+    });
+  }
   console.log("Waiting 30s before initial scrape to let Railway health check pass...");
 
   // Delay scrape so Railway's health check can confirm the server is alive first
