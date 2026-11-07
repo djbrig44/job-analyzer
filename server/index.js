@@ -405,20 +405,37 @@ async function scrapeConcord() {
     });
     const $ = cheerio.load(data);
     const jobs = [];
-    $(".iCIMS_JobsTable a[href*='/jobs/']").each((_, el) => {
-      const title = $(el).text().trim();
+    // iCIMS markup drifted: postings are card-style anchors (job detail links
+    // carry a numeric id) whose text can include the "Title" header cell.
+    // Match anywhere in the doc, prefer explicit title/location elements
+    // inside the card, and fall back to text patterns.
+    $("a[href*='/jobs/']").each((_, el) => {
       const href = $(el).attr("href") || "";
-      const url = href.startsWith("http") ? href : "https://careers-concord.icims.com" + href;
-      // Get the parent row and find location
-      const row = $(el).closest("tr, .iCIMS_JobListingRow, div");
-      const location = row.find("[class*='location'], [class*='Location']").text().trim()
-        || row.text().match(/US-[A-Z]{2}-[\w\s]+/)?.[0] || "";
-      if (title && title.length > 3 && !title.match(/^ID\s/)) {
+      if (!/\/jobs\/\d+/.test(href)) return;
+      const url = (href.startsWith("http") ? href : "https://careers-concord.icims.com" + href).replace("&in_iframe=1", "");
+      // Prefer a heading that is a real title, not a header-label cell
+      const headerLabel = /^(title|job locations?|location|id|posted date|category|type|department)$/i;
+      let title = "";
+      $(el).find("h1, h2, h3, h4, .iCIMS_JobTitle, [class*='title' i]").each((_, t) => {
+        const txt = $(t).text().replace(/\s+/g, " ").trim();
+        if (!title && txt && !headerLabel.test(txt)) title = txt;
+      });
+      if (!title) title = $(el).text().trim();
+      // Strip a leading "Title" header cell and trailing field sections
+      title = title.replace(/^\s*title\s*[\r\n]+/i, "").replace(/\s+/g, " ").trim();
+      title = title.split(/\s*(?:job locations?|posted date|requisition id|job id)/i)[0].trim();
+      const card = $(el).closest("tr, li, .row, [class*='JobsTable' i], div");
+      let location = $(el).find("[class*='location' i]").first().text().trim()
+        || card.find("[class*='location' i]").first().text().trim()
+        || ($(el).text() + " " + card.text()).match(/US-[A-Z]{2}(?:-[\w .]+)?/)?.[0]
+        || "";
+      location = location.replace(/^\s*location\s*[\r\n]+/i, "").replace(/^US-/, "").replace(/-/g, ", ").replace(/\s+/g, " ").trim();
+      if (title && title.length > 3 && title.length < 200 && !title.match(/^ID\s/i) && !/^(search|view|next|previous|more)\b/i.test(title)) {
         jobs.push({
           title,
           company: "Concord",
-          location: location.replace(/^US-/, "").replace(/-/g, ", "),
-          url: url.replace("&in_iframe=1", ""),
+          location,
+          url,
           source: "concord",
           id: jobId("con", title),
         });
