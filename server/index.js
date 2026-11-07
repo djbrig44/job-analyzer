@@ -560,6 +560,47 @@ async function scoreJob(job) {
   }
 }
 
+// ─── Pipeline statuses & seed entries ────────────────────────────────────────
+const PIPELINE_STATUSES = ["none", "saved", "applied", "screen", "interview", "offer", "rejected", "closed"];
+
+// Applications made outside the scrapers (recruiters, direct outreach).
+// Seeded idempotently at boot; firstSeen is backdated to the status date so
+// they don't show as NEW.
+const SEED_PIPELINE = [
+  { title: "Director, Artist Marketing", company: "AWAL / Sony Music", location: "Los Angeles, CA", status: "applied", statusDate: "2026-03-01" },
+  { title: "Director, Global Catalog Recordings", company: "BMG", location: "Los Angeles, CA", status: "rejected", statusDate: "2026-04-01" },
+  { title: "Senior Manager/Director of Digital Marketing", company: "Nice Life Recording Company", location: "Los Angeles, CA", status: "rejected", statusDate: "2026-09-01" },
+  { title: "Sr. Manager, Culture Marketing", company: "Red Bull North America", location: "Santa Monica, CA", status: "applied", statusDate: "2026-09-01" },
+  { title: "Manager, Music Marketing", company: "Suno", location: "", status: "applied", statusDate: "2026-10-01" },
+  { title: "VP/Director of Marketing, West", company: "Audiomack", location: "Remote", status: "applied", statusDate: "2026-10-01" },
+  { title: "M&A Marketing Manager", company: "Create Music Group", location: "Los Angeles, CA", status: "applied", statusDate: "2026-10-01" },
+];
+
+function seedPipelineEntries() {
+  const cache = loadCache();
+  const byId = new Set(cache.jobs.map((j) => j.id));
+  let added = 0;
+  for (const seed of SEED_PIPELINE) {
+    const id = jobId("manual", seed.title + seed.company);
+    if (byId.has(id)) continue;
+    cache.jobs.push({
+      ...seed,
+      id,
+      url: "",
+      source: "manual",
+      firstSeen: seed.statusDate,
+      notes: "",
+      result: null,
+    });
+    added++;
+  }
+  if (added > 0) {
+    cache.lastUpdated = cache.lastUpdated || new Date().toISOString();
+    saveCache(cache);
+    console.log(`🌱 Seeded ${added} manual pipeline entries`);
+  }
+}
+
 // ─── Email digest (Nodemailer + Gmail SMTP app password) ─────────────────────
 const DIGEST_TO = process.env.DIGEST_TO;
 const DIGEST_FROM = process.env.DIGEST_FROM;
@@ -787,11 +828,25 @@ async function scrapeAllJobs() {
       const prev = existingById.get(job.id);
       job.firstSeen = prev ? (prev.firstSeen || existingCache.lastUpdated || nowIso) : nowIso;
       if (prev && (prev.result || prev.status)) {
-        enrichedJobs.push({ ...job, description: prev.description, result: prev.result, status: prev.status });
+        enrichedJobs.push({
+          ...job,
+          description: prev.description,
+          result: prev.result,
+          status: prev.status,
+          statusDate: prev.statusDate,
+          notes: prev.notes,
+        });
       } else {
         enrichedJobs.push(job);
         toScore.push(job);
       }
+    }
+
+    // Manual pipeline entries never come from the scrapers — carry them over
+    // so a scrape can't wipe them
+    const scrapedIds = new Set(enrichedJobs.map((j) => j.id));
+    for (const j of existingCache.jobs || []) {
+      if (j.source === "manual" && !scrapedIds.has(j.id)) enrichedJobs.push(j);
     }
 
     // Fetch JDs and score new jobs
@@ -876,7 +931,54 @@ app.post("/api/scrape", async (req, res) => {
   }
 });
 
-// Update job pipeline status
+// Update pipeline fields on a job
+app.patch("/api/jobs/:id", (req, res) => {
+  const { status, statusDate, notes } = req.body;
+  if (status !== undefined && !PIPELINE_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${PIPELINE_STATUSES.join(", ")}` });
+  }
+  const cache = loadCache();
+  const job = cache.jobs.find((j) => j.id === req.params.id);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  if (status !== undefined) job.status = status === "none" ? null : status;
+  if (statusDate !== undefined) job.statusDate = statusDate;
+  if (notes !== undefined) job.notes = notes;
+  saveCache(cache);
+  res.json({ success: true, job });
+});
+
+// Create a manual pipeline entry (recruiter/direct-outreach applications)
+app.post("/api/jobs", (req, res) => {
+  const { title, company, location, url, description, status, statusDate, notes, result } = req.body;
+  if (!title || !company) return res.status(400).json({ error: "title and company are required" });
+  if (status && !PIPELINE_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${PIPELINE_STATUSES.join(", ")}` });
+  }
+  const cache = loadCache();
+  const id = jobId("manual", title + company);
+  if (cache.jobs.some((j) => j.id === id)) {
+    return res.status(409).json({ error: "A manual entry with this title + company already exists." });
+  }
+  const job = {
+    id,
+    title,
+    company,
+    location: location || "",
+    url: url || "",
+    description: description || "",
+    source: "manual",
+    firstSeen: new Date().toISOString(),
+    status: status && status !== "none" ? status : null,
+    statusDate: statusDate || new Date().toISOString().slice(0, 10),
+    notes: notes || "",
+    result: result || null,
+  };
+  cache.jobs.push(job);
+  saveCache(cache);
+  res.json({ success: true, job });
+});
+
+// Update job pipeline status (legacy endpoint kept for cached frontends)
 app.post("/api/job-status", (req, res) => {
   const { jobId, status } = req.body;
   const cache = loadCache();
@@ -1034,6 +1136,7 @@ cron.schedule("0 */6 * * *", () => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🤖 Scoring model: ${SCORING_MODEL}`);
+  try { seedPipelineEntries(); } catch (e) { console.error("Seed error (non-fatal):", e.message); }
   if (!digestEnabled) {
     console.log("📧 Email digest disabled — set DIGEST_TO, DIGEST_FROM and GMAIL_APP_PASSWORD to enable.");
   } else {
