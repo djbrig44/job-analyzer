@@ -9,7 +9,7 @@ function jobId(prefix, text) {
   return `${prefix}-${crypto.createHash("md5").update(text).digest("hex").slice(0, 12)}`;
 }
 const cron = require("node-cron");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const fs = require("fs");
 const path = require("path");
 const { chromium: pwChromium } = require("playwright");
@@ -671,21 +671,17 @@ function seedPipelineEntries() {
   }
 }
 
-// ─── Email digest (Nodemailer + Gmail SMTP app password) ─────────────────────
+// ─── Email digest (Resend HTTP API — Railway blocks outbound SMTP) ───────────
 const DIGEST_TO = process.env.DIGEST_TO;
-const DIGEST_FROM = process.env.DIGEST_FROM;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
-const digestEnabled = !!(DIGEST_TO && DIGEST_FROM && GMAIL_APP_PASSWORD);
+// resend.dev sender works before a domain is verified
+const DIGEST_FROM = process.env.DIGEST_FROM || "Job Tracker <onboarding@resend.dev>";
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const digestEnabled = !!(DIGEST_TO && RESEND_API_KEY);
 
-let _mailer = null;
-function getMailer() {
-  if (!_mailer) {
-    _mailer = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: DIGEST_FROM, pass: GMAIL_APP_PASSWORD },
-    });
-  }
-  return _mailer;
+let _resend = null;
+function getResend() {
+  if (!_resend) _resend = new Resend(RESEND_API_KEY);
+  return _resend;
 }
 
 const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -728,11 +724,20 @@ async function sendDigest(jobs, reason) {
   const excellent = sorted.filter((j) => (j.result?.score || 0) >= 85).length;
   const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent)`;
   try {
-    await getMailer().sendMail({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) });
-    console.log(`📧 Digest sent (${reason}): ${sorted.length} jobs, ${excellent} excellent → ${DIGEST_TO}`);
+    // 15s cap so a hung request can't stall callers (e.g. /api/digest/test)
+    const result = await Promise.race([
+      getResend().emails.send({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Resend send timed out after 15s")), 15000)),
+    ]);
+    if (result.error) {
+      console.error(`📧 Digest send failed (${reason}): ${JSON.stringify(result.error)}`);
+      return false;
+    }
+    console.log(`📧 Digest sent (${reason}): ${sorted.length} jobs, ${excellent} excellent → ${DIGEST_TO} (message id ${result.data?.id})`);
     return true;
   } catch (e) {
-    console.error(`📧 Digest send failed (${reason}): ${e.message}`);
+    const body = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+    console.error(`📧 Digest send failed (${reason}): ${body}`);
     return false;
   }
 }
@@ -1092,7 +1097,7 @@ app.post("/api/clear-lock", (req, res) => {
 // Send the digest for the current cache regardless of recency (delivery test)
 app.post("/api/digest/test", async (req, res) => {
   if (!digestEnabled) {
-    return res.status(500).json({ error: "Digest disabled: set DIGEST_TO, DIGEST_FROM, GMAIL_APP_PASSWORD." });
+    return res.status(500).json({ error: "Digest disabled: set RESEND_API_KEY and DIGEST_TO (DIGEST_FROM optional)." });
   }
   const cache = loadCache();
   const jobs = cache.jobs.filter((j) => j.result && j.result.score >= 70);
@@ -1221,9 +1226,9 @@ app.listen(PORT, () => {
   console.log(`🤖 Scoring model: ${SCORING_MODEL}`);
   try { seedPipelineEntries(); } catch (e) { console.error("Seed error (non-fatal):", e.message); }
   if (!digestEnabled) {
-    console.log("📧 Email digest disabled — set DIGEST_TO, DIGEST_FROM and GMAIL_APP_PASSWORD to enable.");
+    console.log("📧 Email digest disabled — set RESEND_API_KEY and DIGEST_TO to enable (DIGEST_FROM optional).");
   } else {
-    console.log(`📧 Email digest enabled → ${DIGEST_TO}`);
+    console.log(`📧 Email digest enabled via Resend → ${DIGEST_TO} (from: ${DIGEST_FROM})`);
   }
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error("🚨 ANTHROPIC_API_KEY IS NOT SET — jobs will be scraped but NEVER scored. Set it in Railway variables.");
