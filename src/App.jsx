@@ -73,6 +73,9 @@ Respond ONLY with valid JSON, no markdown:
   "recommend": true | false
 }`;
 
+const DIRECTOR_PLUS = /\b(director|vp|vice president|svp|evp|head of|chief)\b/i;
+const NEW_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 const tierColors = {
   "Excellent Match": "#00FF87",
   "Good Match": "#2EC4B6",
@@ -161,6 +164,10 @@ function JobCard({ job, onRemove, onStatusChange }) {
               <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
                 color: "rgba(255,255,255,0.3)", border: "1px solid rgba(255,255,255,0.1)" }}>AUTO</span>
             )}
+            {job.firstSeen && Date.now() - new Date(job.firstSeen).getTime() < NEW_WINDOW_MS && (
+              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
+                color: "#00FF87", background: "#00FF8722", border: "1px solid #00FF8755" }}>NEW</span>
+            )}
           </div>
           <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 600,
             color: "rgba(255,255,255,0.92)", marginBottom: 3 }}>{job.title}</div>
@@ -225,6 +232,13 @@ export default function App() {
   const [scrapeStatus, setScrapeStatus] = useState("");
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [health, setHealth] = useState(null);
+  const [scoreHealth, setScoreHealth] = useState(null);
+
+  const refreshHealth = useCallback(() => {
+    fetch("/api/health").then(r => r.json()).then(setHealth).catch(() => {});
+    fetch("/api/score-health").then(r => r.json()).then(setScoreHealth).catch(() => {});
+  }, []);
 
   // Load cached/scored jobs on mount
   useEffect(() => {
@@ -234,7 +248,8 @@ export default function App() {
         setLastUpdated(cache.lastUpdated);
       }
     }).catch(() => {});
-  }, []);
+    refreshHealth();
+  }, [refreshHealth]);
 
   const visibleJobs = jobs.filter(j => j.status !== "dismissed");
   const relevantJobs = visibleJobs.filter(j => !j.result || j.result.score >= 25);
@@ -296,6 +311,7 @@ Return ONLY the JSON object.`;
       setLastUpdated(cache.lastUpdated);
       setJobs(cache.jobs.map(j => ({ ...j, auto: true })));
       setScrapeStatus(`✅ Done! ${data.count} jobs found, ${data.scored} scored.`);
+      refreshHealth();
     } catch (e) {
       setScrapeStatus("❌ Scrape failed — is the server running?");
     }
@@ -321,6 +337,7 @@ Return ONLY the JSON object.`;
       if (filter === "all") return true;
       if (filter === "applied") return j.status === "applied";
       if (filter === "saved") return j.status === "saved";
+      if (filter === "director+") return DIRECTOR_PLUS.test(j.title);
       return j.result?.tier === filter;
     })
     .sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
@@ -386,11 +403,14 @@ Return ONLY the JSON object.`;
                   { label: "EXCELLENT", value: stats.excellent, color: "#00FF87" },
                   { label: "GOOD MATCH", value: stats.good, color: "#2EC4B6" },
                   { label: "APPLIED", value: stats.applied, color: "#00FF87" },
-                  { label: "AVG SCORE", value: stats.avgScore || "—", color: "#FF9F1C" },
+                  { label: "AVG SCORE", value: stats.avgScore || "—", color: "#FF9F1C",
+                    sub: health ? `Scored ${health.scoredJobs}/${health.cachedJobs}` : null,
+                    subColor: scoreHealth?.failureCount > 0 ? "#E63946" : "rgba(255,255,255,0.35)" },
                 ].map(s => (
                   <div key={s.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
                     <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.1em", marginBottom: 6 }}>{s.label}</div>
                     <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 26, fontWeight: 800, color: s.color }}>{s.value}</div>
+                    {s.sub && <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, marginTop: 4, color: s.subColor }}>{s.sub}</div>}
                   </div>
                 ))}
               </div>
@@ -403,7 +423,7 @@ Return ONLY the JSON object.`;
                       🎵 Auto-Fetch Live Jobs
                     </div>
                     <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "rgba(255,255,255,0.45)" }}>
-                      Scrapes MBW, ROSTR, Doors Open, Digilogue & UMG — scores all matches automatically
+                      Scrapes {health?.sources ?? "all"} sources — scores all matches automatically
                       {lastUpdated && <span style={{ marginLeft: 8, color: "rgba(255,255,255,0.25)" }}>
                         · Last updated {new Date(lastUpdated).toLocaleTimeString()}
                       </span>}
@@ -469,6 +489,15 @@ Return ONLY the JSON object.`;
                       </button>
                     );
                   })}
+                  <button onClick={() => setFilter("director+")} style={{
+                    fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "6px 14px", borderRadius: 20,
+                    cursor: "pointer", border: "1px solid",
+                    background: filter === "director+" ? "#8338EC22" : "transparent",
+                    borderColor: filter === "director+" ? "#8338EC" : "rgba(255,255,255,0.1)",
+                    color: filter === "director+" ? "#8338EC" : "rgba(255,255,255,0.4)"
+                  }}>
+                    Director+
+                  </button>
                   <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
                   {[{ key: "applied", label: "Applied", color: "#00FF87" }, { key: "saved", label: "Saved", color: "#3A86FF" }].map(f => (
                     <button key={f.key} onClick={() => setFilter(f.key)} style={{

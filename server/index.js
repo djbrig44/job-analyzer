@@ -658,6 +658,9 @@ function dedupJobs(jobs) {
 const SCRAPE_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 let _scrapeStartedAt = null;
 
+// The scrapers run on every scheduled scrape (order matches Promise.all below)
+const SCRAPER_SOURCES = ["mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony"];
+
 async function scrapeAllJobs() {
   if (_scrapeStartedAt) {
     const heldMs = Date.now() - _scrapeStartedAt;
@@ -702,20 +705,22 @@ async function scrapeAllJobs() {
     const { jobs: dedupedJobs, merged } = dedupJobs(caJobs);
     console.log(`Dedup: ${merged} merged`);
 
-    // Preserve existing scores from cache
+    // Preserve existing scores, statuses and firstSeen from cache
     const existingCache = loadCache();
-    const scoredMap = new Map();
-    for (const j of existingCache.jobs || []) {
-      if (j.result || j.status) scoredMap.set(j.id, { description: j.description, result: j.result, status: j.status });
-    }
+    const existingById = new Map();
+    for (const j of existingCache.jobs || []) existingById.set(j.id, j);
 
-    // Identify new/unscored jobs
+    // Identify new/unscored jobs; stamp firstSeen on insert and never
+    // overwrite it on later scrapes (legacy jobs without one are backdated to
+    // the cache's lastUpdated so they don't all light up as "New")
+    const nowIso = new Date().toISOString();
     const enrichedJobs = [];
     const toScore = [];
     for (const job of dedupedJobs) {
-      const existing = scoredMap.get(job.id);
-      if (existing) {
-        enrichedJobs.push({ ...job, description: existing.description, result: existing.result, status: existing.status });
+      const prev = existingById.get(job.id);
+      job.firstSeen = prev ? (prev.firstSeen || existingCache.lastUpdated || nowIso) : nowIso;
+      if (prev && (prev.result || prev.status)) {
+        enrichedJobs.push({ ...job, description: prev.description, result: prev.result, status: prev.status });
       } else {
         enrichedJobs.push(job);
         toScore.push(job);
@@ -850,6 +855,7 @@ app.get("/api/health", (req, res) => {
     status: "ok",
     cachedJobs: cache.jobs.length,
     scoredJobs: cache.jobs.filter(j => j.result).length,
+    sources: SCRAPER_SOURCES.length,
     lastUpdated: cache.lastUpdated,
   });
 });
