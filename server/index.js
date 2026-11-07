@@ -9,6 +9,7 @@ function jobId(prefix, text) {
   return `${prefix}-${crypto.createHash("md5").update(text).digest("hex").slice(0, 12)}`;
 }
 const cron = require("node-cron");
+const nodemailer = require("nodemailer");
 const fs = require("fs");
 const path = require("path");
 const { chromium: pwChromium } = require("playwright");
@@ -559,6 +560,72 @@ async function scoreJob(job) {
   }
 }
 
+// ─── Email digest (Nodemailer + Gmail SMTP app password) ─────────────────────
+const DIGEST_TO = process.env.DIGEST_TO;
+const DIGEST_FROM = process.env.DIGEST_FROM;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
+const digestEnabled = !!(DIGEST_TO && DIGEST_FROM && GMAIL_APP_PASSWORD);
+
+let _mailer = null;
+function getMailer() {
+  if (!_mailer) {
+    _mailer = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: DIGEST_FROM, pass: GMAIL_APP_PASSWORD },
+    });
+  }
+  return _mailer;
+}
+
+const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function buildDigestHtml(jobs) {
+  const rows = jobs.map((j) => {
+    const r = j.result || {};
+    const link = j.url ? `<a href="${esc(j.url)}">${esc(j.title)}</a>` : esc(j.title);
+    return `<tr>
+      <td style="padding:6px 10px;font-weight:bold;color:${(r.score || 0) >= 85 ? "#0a7d33" : "#555"}">${r.score ?? "—"}</td>
+      <td style="padding:6px 10px">${link}</td>
+      <td style="padding:6px 10px">${esc(j.company)}</td>
+      <td style="padding:6px 10px">${esc(j.location)}</td>
+      <td style="padding:6px 10px">${esc(j.source)}</td>
+      <td style="padding:6px 10px;color:#555">${esc(r.headline || "")}</td>
+    </tr>`;
+  }).join("\n");
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px">
+    <tr style="text-align:left;border-bottom:1px solid #ccc">
+      <th style="padding:6px 10px">Score</th><th style="padding:6px 10px">Title</th>
+      <th style="padding:6px 10px">Company</th><th style="padding:6px 10px">Location</th>
+      <th style="padding:6px 10px">Source</th><th style="padding:6px 10px">Fit</th>
+    </tr>
+    ${rows}
+  </table>`;
+}
+
+// Jobs worth emailing after a scrape: seen in the last 24h and scored >= 70
+function digestCandidates(jobs) {
+  const now = Date.now();
+  return jobs.filter(
+    (j) => j.result && j.result.score >= 70 &&
+      j.firstSeen && now - new Date(j.firstSeen).getTime() < 24 * 60 * 60 * 1000
+  );
+}
+
+async function sendDigest(jobs, reason) {
+  if (!digestEnabled || jobs.length === 0) return false;
+  const sorted = [...jobs].sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
+  const excellent = sorted.filter((j) => (j.result?.score || 0) >= 85).length;
+  const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent)`;
+  try {
+    await getMailer().sendMail({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) });
+    console.log(`📧 Digest sent (${reason}): ${sorted.length} jobs, ${excellent} excellent → ${DIGEST_TO}`);
+    return true;
+  } catch (e) {
+    console.error(`📧 Digest send failed (${reason}): ${e.message}`);
+    return false;
+  }
+}
+
 // ─── Location filter (two-stage) ──────────────────────────────────────────────
 // Stage 1 rejects anything that names a non-California place, regardless of
 // what else the string says. Stage 2 then requires a positive California
@@ -759,7 +826,9 @@ async function scrapeAllJobs() {
     const cache = { jobs: enrichedJobs, lastUpdated: new Date().toISOString() };
     saveCache(cache);
     const scored = enrichedJobs.filter(j => j.result).length;
-    console.log(`✅ Total saved: ${dedupedJobs.length} CA jobs (${scored} scored)`);
+    console.log(`✅ Total saved: ${enrichedJobs.length} jobs (${scored} scored)`);
+    // Fire-and-forget: email new strong matches from this scrape
+    sendDigest(digestCandidates(enrichedJobs), "scrape").catch(() => {});
     return cache;
   } finally {
     _scrapeStartedAt = null;
@@ -833,6 +902,18 @@ app.post("/api/clear-lock", (req, res) => {
   _scrapeStartedAt = null;
   console.log(`🔓 Scrape lock cleared via /api/clear-lock (was ${wasHeld ? `held ${Math.round(heldMs / 1000)}s` : "not held"})`);
   res.json({ success: true, wasHeld, heldSeconds: Math.round(heldMs / 1000) });
+});
+
+// Send the digest for the current cache regardless of recency (delivery test)
+app.post("/api/digest/test", async (req, res) => {
+  if (!digestEnabled) {
+    return res.status(500).json({ error: "Digest disabled: set DIGEST_TO, DIGEST_FROM, GMAIL_APP_PASSWORD." });
+  }
+  const cache = loadCache();
+  const jobs = cache.jobs.filter((j) => j.result && j.result.score >= 70);
+  if (jobs.length === 0) return res.json({ sent: false, message: "No scored jobs >= 70 in cache." });
+  const ok = await sendDigest(jobs, "test");
+  res.json({ sent: ok, count: jobs.length, to: DIGEST_TO });
 });
 
 // Debug: inspect raw UMG jobs before CA filter
@@ -913,6 +994,8 @@ app.post("/api/rescore", (req, res) => {
       cache.lastUpdated = new Date().toISOString();
       saveCache(cache);
       console.log(`🔁 Rescore done: ${_scoreHealth.successCount} scored, ${_scoreHealth.failureCount} failed`);
+      // Email jobs that just moved into the 85+ tier (all were unscored before)
+      sendDigest(toScore.filter((j) => j.result && j.result.score >= 85), "rescore").catch(() => {});
     } catch (e) {
       console.error("Rescore error:", e.message);
     } finally {
@@ -951,6 +1034,11 @@ cron.schedule("0 */6 * * *", () => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🤖 Scoring model: ${SCORING_MODEL}`);
+  if (!digestEnabled) {
+    console.log("📧 Email digest disabled — set DIGEST_TO, DIGEST_FROM and GMAIL_APP_PASSWORD to enable.");
+  } else {
+    console.log(`📧 Email digest enabled → ${DIGEST_TO}`);
+  }
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error("🚨 ANTHROPIC_API_KEY IS NOT SET — jobs will be scraped but NEVER scored. Set it in Railway variables.");
   } else {
