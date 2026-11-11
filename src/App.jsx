@@ -53,6 +53,8 @@ const SOURCES = [
   { id: "tubi",      name: "Tubi",               url: "https://tubitv.com/careers",                            color: "#FFBA08" },
   { id: "builtinla", name: "Built In LA",        url: "https://www.builtinla.com/jobs/marketing",              color: "#4895EF" },
   { id: "netflix",   name: "Netflix",            url: "https://explore.jobs.netflix.net/careers",              color: "#E50914" },
+  { id: "aihumanjobs", name: "AI Human Jobs",    url: "https://aihumanjobs.com/",                              color: "#80ED99" },
+  { id: "aijobsai", name: "AIJobs.ai",           url: "https://aijobs.ai/marketing",                           color: "#F4A261" },
   { id: "manual",    name: "Manual",             url: "",                                                      color: "#CDB4DB" },
 ];
 
@@ -668,6 +670,8 @@ Return ONLY the JSON object.`;
                   tubi:      { status: "✓ Auto-Scraped",        note: "Greenhouse board \"tubitv\" (corporate roles, not just campus).", ok: true },
                   builtinla: { status: "✓ Auto-Scraped",        note: "Aggregator list pages (marketing × entertainment/AI). ATS copies win dedup.", ok: true },
                   netflix:   { status: "⚠ No Public Feed",      note: "Eightfold portal; jobs API needs OAuth. Check explore.jobs.netflix.net manually.", ok: false },
+                  aihumanjobs: { status: "✓ Auto-Scraped",      note: "Public JSON of non-engineering roles from ~33 AI companies' ATS boards. Global; filters cut hard.", ok: true },
+                  aijobsai:  { status: "✓ Auto-Scraped",        note: "Server-rendered marketing tag, paginated. ATS copies win dedup.", ok: true },
                   manual:    { status: "✎ Manual",              note: "Recruiter and direct-outreach applications entered by hand.", ok: true },
                 }[s.id] || { status: "—", note: "", ok: false };
                 return (

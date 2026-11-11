@@ -335,9 +335,10 @@ async function scrapeGreenhouse({ slug, source, company }) {
 }
 
 // ─── Built In LA aggregator (entertainment-ai lane) ──────────────────────────
+// Marketing category × AI industry filter, LA city scope — structured filters
+// instead of free-text search
 const BUILTINLA_URLS = [
-  "https://www.builtinla.com/jobs/marketing?search=entertainment",
-  "https://www.builtinla.com/jobs/marketing?search=AI",
+  "https://www.builtinla.com/jobs/marketing/artificial-intelligence",
 ];
 async function scrapeBuiltInLA() {
   const all = [];
@@ -385,6 +386,124 @@ async function scrapeBuiltInLA() {
     return all;
   } catch (e) {
     console.warn(`⚠️ WARN: Built In LA returned ${all.length} jobs (fetch error) — url=${BUILTINLA_URLS[0]} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return all;
+  }
+}
+
+// ─── AI Human Jobs aggregator (public JSON + Atom fallback) ──────────────────
+// Non-engineering roles aggregated from ~33 AI companies' own ATS boards.
+// Global and mostly remote — the title/location filters do the cutting.
+const AHJ_JSON_URL = "https://aihumanjobs.com/api/jobs.json";
+const AHJ_FEED_URLS = ["https://aihumanjobs.com/feed.xml", "https://aihumanjobs.com/atom.xml", "https://aihumanjobs.com/feed"];
+
+function ahjJob(title, company, location, url, description) {
+  return {
+    title: String(title).replace(/\s+/g, " ").trim(),
+    company: String(company || "Unknown").replace(/\s+/g, " ").trim(),
+    location: String(location || "").replace(/\s+/g, " ").trim(),
+    url: String(url || "https://aihumanjobs.com"),
+    source: "aihumanjobs",
+    id: jobId("ahj", String(title) + String(company || "") + String(location || "")),
+    description: String(description || "").replace(/\s+/g, " ").trim().substring(0, 3000),
+  };
+}
+
+async function scrapeAIHumanJobs() {
+  // Primary: public JSON file; tolerate a few plausible shapes
+  try {
+    const { data, status } = await axios.get(AHJ_JSON_URL, { headers: { "Accept": "application/json" }, timeout: 20000 });
+    const rows = Array.isArray(data) ? data : (data?.jobs || data?.data || data?.items || data?.listings);
+    if (Array.isArray(rows) && rows.length) {
+      const jobs = [];
+      const seen = new Set();
+      for (const r of rows) {
+        const title = r.title || r.position || r.role || "";
+        const company = r.company || r.company_name || r.companyName || r.employer || "";
+        const location = r.location || r.region || r.city || (Array.isArray(r.locations) ? r.locations.join(" / ") : "") || "";
+        const url = r.url || r.link || r.apply_url || r.applyUrl || r.job_url || "";
+        const category = r.category || r.department || r.team || "";
+        if (!title || String(title).length < 4) continue;
+        const job = ahjJob(title, company, location, url, r.description || r.summary || (category ? `Category: ${category}` : ""));
+        if (!seen.has(job.id)) { seen.add(job.id); jobs.push(job); }
+      }
+      console.log(`AI Human Jobs: ${jobs.length} jobs via JSON API`);
+      auditScraper("AI Human Jobs", AHJ_JSON_URL, status, rows.length, jobs);
+      return jobs;
+    }
+    console.warn(`⚠️ WARN: AI Human Jobs JSON had unexpected shape (top-level keys: ${Object.keys(data || {}).slice(0, 8).join(", ") || typeof data}) — trying Atom feed`);
+  } catch (e) {
+    console.warn(`⚠️ WARN: AI Human Jobs JSON fetch failed [${e.response?.status || "ERR"}]: ${e.message} — trying Atom feed`);
+  }
+  // Fallback: Atom/RSS feed; titles commonly "Role at Company"
+  for (const feedUrl of AHJ_FEED_URLS) {
+    try {
+      const { data, status } = await axios.get(feedUrl, { headers: { "Accept": "application/atom+xml, application/rss+xml, */*" }, timeout: 20000 });
+      const $ = cheerio.load(data, { xmlMode: true });
+      const entries = $("entry, item");
+      if (!entries.length) continue;
+      const jobs = [];
+      const seen = new Set();
+      entries.each((_, el) => {
+        const raw = $(el).find("title").first().text().trim();
+        const link = $(el).find("link").attr("href") || $(el).find("link").first().text().trim();
+        if (!raw || raw.length < 4) return;
+        const m = raw.match(/^(.+?)\s+at\s+(.+?)(?:\s*[\(—–|-]\s*(.+?)\)?)?$/i);
+        const job = m ? ahjJob(m[1], m[2], m[3] || "", link, "") : ahjJob(raw, "", "", link, "");
+        if (!seen.has(job.id)) { seen.add(job.id); jobs.push(job); }
+      });
+      console.log(`AI Human Jobs: ${jobs.length} jobs via Atom feed (${feedUrl})`);
+      auditScraper("AI Human Jobs", feedUrl, status, entries.length, jobs);
+      return jobs;
+    } catch (e) { /* try next feed path */ }
+  }
+  console.warn(`⚠️ WARN: AI Human Jobs returned 0 jobs — url=${AHJ_JSON_URL} (JSON and feed paths all failed)`);
+  return [];
+}
+
+// ─── AIJobs.ai marketing-tag aggregator (cheerio, paginated) ─────────────────
+async function scrapeAIJobsAI() {
+  const all = [];
+  const seen = new Set();
+  let candidates = 0;
+  let lastStatus = null;
+  try {
+    for (let page = 1; page <= 4; page++) {
+      const url = `https://aijobs.ai/marketing?page=${page}`;
+      const { data, status } = await axios.get(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" },
+        timeout: 20000,
+      });
+      lastStatus = status;
+      const $ = cheerio.load(data);
+      const anchors = $('a[href^="/job/"]');
+      if (!anchors.length) break; // stop paginating on an empty page
+      candidates += anchors.length;
+      let added = 0;
+      anchors.each((_, el) => {
+        const href = $(el).attr("href") || "";
+        const link = "https://aijobs.ai" + href;
+        const card = $(el).closest("article, li, [class*='card' i], div");
+        let title = $(el).find("h2, h3, [class*='title' i]").first().text().replace(/\s+/g, " ").trim()
+          || $(el).text().replace(/\s+/g, " ").trim();
+        const company = card.find("[class*='company' i], a[href^='/company/']").first().text().replace(/\s+/g, " ").trim();
+        const location = card.find("[class*='location' i]").first().text().replace(/\s+/g, " ").trim();
+        if (title && title.length > 3 && title.length < 200) {
+          const id = jobId("aij", title + (company || ""));
+          if (!seen.has(id)) {
+            seen.add(id);
+            all.push({ title, company: company || "Unknown", location, url: link, source: "aijobsai", id });
+            added++;
+          }
+        }
+      });
+      if (!added) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    console.log(`AIJobs.ai: scraped ${all.length} jobs`);
+    auditScraper("AIJobs.ai", "https://aijobs.ai/marketing", lastStatus, candidates, all);
+    return all;
+  } catch (e) {
+    console.warn(`⚠️ WARN: AIJobs.ai returned ${all.length} jobs (fetch error) — url=https://aijobs.ai/marketing status=${e.response?.status || "ERR"}: ${e.message}`);
     return all;
   }
 }
@@ -644,6 +763,8 @@ const SOURCE_TRACKS = {
   lumaai: "entertainment-ai",
   tubi: "entertainment-ai",
   builtinla: "entertainment-ai",
+  aihumanjobs: "entertainment-ai",
+  aijobsai: "entertainment-ai",
 };
 const ENT_AI_COMPANY_RE = /spotify|youtube|tiktok|meta|google|apple|amazon|netflix|tubi|roku|snap|adobe/i;
 const ENT_AI_TITLE_RE = /\b(AI|GTM|go-to-market|product marketing|creator|partnerships|growth)\b/i;
@@ -1020,6 +1141,7 @@ let _scrapeStartedAt = null;
 const SCRAPER_SOURCES = [
   "mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony",
   "suno", "elevenlabs", "runway", "higgsfield", "circle", "lumaai", "tubi", "builtinla",
+  "aihumanjobs", "aijobsai",
 ];
 
 async function scrapeAllJobs() {
@@ -1045,6 +1167,8 @@ async function scrapeAllJobs() {
       scrapeAshby({ slug: "lumaai", source: "lumaai", company: "Luma AI" }),
       scrapeGreenhouse({ slug: "tubitv", source: "tubi", company: "Tubi" }),
       scrapeBuiltInLA(),
+      scrapeAIHumanJobs(),
+      scrapeAIJobsAI(),
     ]);
     const allJobs = scraperResults.flat();
     // Filter out junk CTA entries
@@ -1075,6 +1199,14 @@ async function scrapeAllJobs() {
     if (LOG_REJECTED_LOCATIONS && locRejected.length) {
       const sample = locRejected.slice(0, 10).map((j) => JSON.stringify(j.location || ""));
       console.log(`📍 Rejected location samples (${locRejected.length} total): ${sample.join(", ")}`);
+    }
+
+    // AI Human Jobs is global/mostly-remote by design — report how hard the
+    // filters cut it
+    const ahjFetched = allJobs.filter((j) => j.source === "aihumanjobs").length;
+    if (ahjFetched) {
+      const ahjKept = caJobs.filter((j) => j.source === "aihumanjobs").length;
+      console.log(`AI Human Jobs: ${ahjFetched} fetched, ${ahjKept} after filters`);
     }
 
     // Collapse the same posting arriving from multiple sources
