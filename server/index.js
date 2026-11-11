@@ -938,10 +938,13 @@ const SEED_PIPELINE = [
 function seedPipelineEntries() {
   const cache = loadCache();
   const byId = new Set(cache.jobs.map((j) => j.id));
+  // A seed whose posting is already tracked from a live source (it was merged
+  // into that posting on a scrape) must not be re-created as a duplicate
+  const byKey = new Set(cache.jobs.map((j) => dedupKey(j)));
   let added = 0;
   for (const seed of SEED_PIPELINE) {
     const id = jobId("manual", seed.title + seed.company);
-    if (byId.has(id)) continue;
+    if (byId.has(id) || byKey.has(dedupKey(seed))) continue;
     cache.jobs.push({
       ...seed,
       id,
@@ -1137,6 +1140,43 @@ function dedupJobs(jobs) {
 const SCRAPE_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 let _scrapeStartedAt = null;
 
+// Below this many characters a description is a stub, not a JD
+const THIN_JD_CHARS = 200;
+
+// Carries cached jobs that the scrape did not return into the new cache:
+// - a manual entry whose posting is now scraped live is merged into that
+//   posting (which inherits its status/notes) instead of living on as a
+//   duplicate;
+// - other manual entries are kept as-is;
+// - a scraped job that has a pipeline status is kept even after its posting
+//   is taken down, flagged delisted, so applications don't vanish.
+function carryOverUnscraped(enrichedJobs, existingJobs) {
+  const scrapedIds = new Set(enrichedJobs.map((j) => j.id));
+  const scrapedByKey = new Map(enrichedJobs.map((j) => [dedupKey(j), j]));
+  let adopted = 0;
+  let delisted = 0;
+  for (const j of existingJobs) {
+    if (scrapedIds.has(j.id)) continue;
+    if (j.source === "manual") {
+      const twin = scrapedByKey.get(dedupKey(j));
+      if (twin) {
+        if (!twin.status && j.status) {
+          twin.status = j.status;
+          twin.statusDate = j.statusDate;
+        }
+        if (!twin.notes && j.notes) twin.notes = j.notes;
+        adopted++;
+      } else {
+        enrichedJobs.push(j);
+      }
+    } else if (j.status && j.status !== "dismissed") {
+      enrichedJobs.push({ ...j, delisted: true });
+      delisted++;
+    }
+  }
+  return { adopted, delisted };
+}
+
 // The scrapers run on every scheduled scrape (order matches Promise.all below)
 const SCRAPER_SOURCES = [
   "mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony",
@@ -1242,21 +1282,43 @@ async function scrapeAllJobs() {
           status: prev.status,
           statusDate: prev.statusDate,
           notes: prev.notes,
+          jdAttempted: prev.jdAttempted,
         });
       } else {
         const carried = prev
-          ? { ...job, description: prev.description || job.description, status: prev.status, statusDate: prev.statusDate, notes: prev.notes }
+          ? { ...job, description: prev.description || job.description, status: prev.status, statusDate: prev.statusDate, notes: prev.notes, jdAttempted: prev.jdAttempted }
           : job;
         enrichedJobs.push(carried);
         toScore.push(carried);
       }
     }
 
-    // Manual pipeline entries never come from the scrapers — carry them over
-    // so a scrape can't wipe them
-    const scrapedIds = new Set(enrichedJobs.map((j) => j.id));
-    for (const j of existingCache.jobs || []) {
-      if (j.source === "manual" && !scrapedIds.has(j.id)) enrichedJobs.push(j);
+    const carry = carryOverUnscraped(enrichedJobs, existingCache.jobs || []);
+    if (carry.adopted || carry.delisted) {
+      console.log(`Pipeline carry-over: ${carry.adopted} manual entries merged into live postings, ${carry.delisted} delisted postings kept`);
+    }
+
+    // One-time retry for entertainment-ai jobs that were scored on a thin
+    // description (title + category only): refetch the JD and rescore only if
+    // a real description comes back. Label-track results are never rescored.
+    if (process.env.ANTHROPIC_API_KEY) {
+      const thin = enrichedJobs.filter(
+        (j) => j.track === "entertainment-ai" && j.result && !j.jdAttempted && j.url &&
+          (j.description || "").length < THIN_JD_CHARS
+      );
+      let refetched = 0;
+      for (const job of thin) {
+        const fetched = await fetchJobDescription(job.url);
+        job.jdAttempted = true;
+        if (fetched && fetched.length >= THIN_JD_CHARS) {
+          job.description = fetched;
+          job.result = null;
+          toScore.push(job);
+          refetched++;
+        }
+        await new Promise(r => setTimeout(r, 300));
+      }
+      if (thin.length) console.log(`Thin-JD retry: ${refetched} refetched for rescoring, ${thin.length - refetched} still thin`);
     }
 
     // Fetch JDs and score new jobs
@@ -1266,10 +1328,13 @@ async function scrapeAllJobs() {
     if (toScore.length > 0 && process.env.ANTHROPIC_API_KEY) {
       console.log(`📝 Fetching JDs for ${toScore.length} new jobs...`);
       for (const job of toScore) {
-        // ATS APIs (Greenhouse/Lever) already deliver descriptions — only
-        // fetch for jobs that don't have one
-        if (!job.description) {
-          job.description = await fetchJobDescription(job.url);
+        // ATS APIs already deliver full descriptions — only fetch when the
+        // job has none or just a stub (e.g. an aggregator's "Category: X"),
+        // and keep the stub if the fetch comes back with less
+        if (!job.jdAttempted && (job.description || "").length < THIN_JD_CHARS) {
+          const fetched = await fetchJobDescription(job.url);
+          if (fetched.length > (job.description || "").length) job.description = fetched;
+          job.jdAttempted = true;
           await new Promise(r => setTimeout(r, 300));
         }
       }

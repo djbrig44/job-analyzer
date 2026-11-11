@@ -197,6 +197,11 @@ function JobCard({ job, onRemove, onUpdate }) {
               <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
                 color: "#00FF87", background: "#00FF8722", border: "1px solid #00FF8755" }}>NEW</span>
             )}
+            {job.delisted && (
+              <span title="This posting is no longer listed at its source; kept because it has a pipeline status"
+                style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
+                  color: "rgba(255,255,255,0.45)", border: "1px dashed rgba(255,255,255,0.25)" }}>DELISTED</span>
+            )}
             <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
               color: job.track === "entertainment-ai" ? "#4CC9F0" : "#FF9F1C",
               border: `1px solid ${job.track === "entertainment-ai" ? "#4CC9F055" : "#FF9F1C55"}` }}>
