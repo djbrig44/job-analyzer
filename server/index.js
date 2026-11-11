@@ -532,7 +532,30 @@ async function scrapeWMG() {
 }
 
 // ─── JD Fetching & Scoring ────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a music industry recruiter AI scoring job postings against a candidate profile.
+// ─── Search tracks ───────────────────────────────────────────────────────────
+// Every job carries a track: "label" (music-label marketing, the original
+// lane) or "entertainment-ai" (AI companies serving entertainment/creators,
+// streaming platforms, entertainment cos modernizing marketing). Assigned at
+// ingest by source default, with a company/title override that can flip a
+// label-source job into the entertainment-ai lane.
+const SOURCE_TRACKS = {
+  mbw: "label", rostr: "label", doorsopen: "label", digilogue: "label",
+  umg: "label", concord: "label", bmg: "label", livenation: "label",
+  wmg: "label", sony: "label",
+  suno: "entertainment-ai",
+};
+const ENT_AI_COMPANY_RE = /spotify|youtube|tiktok|meta|google|apple|amazon|netflix|tubi|roku|snap|adobe/i;
+const ENT_AI_TITLE_RE = /\b(AI|GTM|go-to-market|product marketing|creator|partnerships|growth)\b/i;
+
+function assignTrack(job) {
+  const base = SOURCE_TRACKS[job.source] || "label";
+  if (base === "label" && (ENT_AI_COMPANY_RE.test(job.company || "") || ENT_AI_TITLE_RE.test(job.title || ""))) {
+    return "entertainment-ai";
+  }
+  return base;
+}
+
+const SYSTEM_PROMPT_LABEL = `You are a music industry recruiter AI scoring job postings against a candidate profile.
 
 CANDIDATE: Brian Gaffey
 TITLE: Music Industry Executive | Data-Driven Marketing & Artist Growth Strategy
@@ -562,6 +585,38 @@ Respond ONLY with valid JSON, no markdown:
   "headline": "one sentence summary of fit",
   "recommend": true | false
 }`;
+
+const SYSTEM_PROMPT_ENT_AI = `You are an executive recruiter AI scoring job postings against a candidate profile for an ENTERTAINMENT + AI search track.
+
+CANDIDATE: Brian Gaffey
+TITLE: Entertainment Marketing Executive | AI-Enabled Growth & Partnerships
+EXPERIENCE: 20+ years in entertainment marketing, including Interscope and Def Jam
+LOCATION: Los Angeles, CA (Remote US acceptable)
+
+PROFILE: Cross-channel campaign leadership at major entertainment brands; creator and influencer partnership programs; six-figure campaign budget ownership; a self-built marketing analytics and automation system (SIA) spanning data pipelines, scoring models and reporting; streaming and audience-growth strategy; executive stakeholder management.
+
+SCORING RULES:
+- Score 0-100 based on fit
+- 85-100 = Excellent Match: creator/entertainment/strategic partnerships, growth or audience strategy, AI-enabled marketing strategy, marketing operations or marketing transformation, or entertainment GTM roles — at AI companies serving creative industries, streaming platforms, or entertainment companies.
+- 70-84 = Good Match: product marketing at those same companies. Strong overlap, but where the posting demands consumer-GTM or SaaS lifecycle experience the candidate lacks, say so explicitly in "gaps".
+- 50-69 = Partial Match: creative technology or AI production roles that require hands-on visual production or engineering skills.
+- Below 30 = No Match: enterprise sales quota roles, software engineering, research science.
+
+LOCATION: Remote US is fully acceptable in this track. If a role implies East Coast or Europe hours overlap, note it as a gap — it is NOT a disqualifier and should not lower the score band.
+
+Respond ONLY with valid JSON, no markdown:
+{
+  "score": number,
+  "tier": "Excellent Match" | "Good Match" | "Partial Match" | "Weak Match",
+  "matchedSkills": ["skill1", "skill2"],
+  "gaps": ["gap1"],
+  "headline": "one sentence summary of fit",
+  "recommend": true | false
+}`;
+
+function systemPromptFor(job) {
+  return job.track === "entertainment-ai" ? SYSTEM_PROMPT_ENT_AI : SYSTEM_PROMPT_LABEL;
+}
 
 async function fetchJobDescription(url) {
   try {
@@ -612,7 +667,7 @@ async function scoreJob(job) {
     const res = await axios.post("https://api.anthropic.com/v1/messages", {
       model: SCORING_MODEL,
       max_tokens: 1000,
-      system: SYSTEM_PROMPT,
+      system: systemPromptFor(job),
       messages: [{ role: "user", content: prompt }],
     }, {
       headers: {
@@ -624,6 +679,8 @@ async function scoreJob(job) {
     });
     const text = res.data.content?.find(b => b.type === "text")?.text || "{}";
     const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    // Record which lane's profile produced this result
+    parsed.track = job.track === "entertainment-ai" ? "entertainment-ai" : "label";
     _scoreHealth.lastAttemptAt = new Date().toISOString();
     _scoreHealth.successCount++;
     return parsed;
@@ -666,6 +723,7 @@ function seedPipelineEntries() {
       id,
       url: "",
       source: "manual",
+      track: seed.track || "label",
       firstSeen: seed.statusDate,
       notes: "",
       result: null,
@@ -900,6 +958,9 @@ async function scrapeAllJobs() {
     const { jobs: dedupedJobs, merged } = dedupJobs(caJobs);
     console.log(`Dedup: ${merged} merged`);
 
+    // Assign the search track at ingest
+    for (const job of dedupedJobs) job.track = assignTrack(job);
+
     // Preserve existing scores, statuses and firstSeen from cache
     const existingCache = loadCache();
     const existingById = new Map();
@@ -914,7 +975,11 @@ async function scrapeAllJobs() {
     for (const job of dedupedJobs) {
       const prev = existingById.get(job.id);
       job.firstSeen = prev ? (prev.firstSeen || existingCache.lastUpdated || nowIso) : nowIso;
-      if (prev && (prev.result || prev.status)) {
+      // A job reassigned into the entertainment-ai lane whose existing score
+      // came from the label profile gets rescored; label-track results are
+      // never rescored here.
+      const reassigned = job.track === "entertainment-ai" && prev?.result && prev.result.track !== "entertainment-ai";
+      if (prev && (prev.result || prev.status) && !reassigned) {
         enrichedJobs.push({
           ...job,
           description: prev.description,
@@ -924,8 +989,11 @@ async function scrapeAllJobs() {
           notes: prev.notes,
         });
       } else {
-        enrichedJobs.push(job);
-        toScore.push(job);
+        const carried = prev
+          ? { ...job, description: prev.description || job.description, status: prev.status, statusDate: prev.statusDate, notes: prev.notes }
+          : job;
+        enrichedJobs.push(carried);
+        toScore.push(carried);
       }
     }
 
@@ -1040,8 +1108,11 @@ app.patch("/api/jobs/:id", (req, res) => {
 
 // Create a manual pipeline entry (recruiter/direct-outreach applications)
 app.post("/api/jobs", (req, res) => {
-  const { title, company, location, url, description, status, statusDate, notes, result } = req.body;
+  const { title, company, location, url, description, status, statusDate, notes, result, track } = req.body;
   if (!title || !company) return res.status(400).json({ error: "title and company are required" });
+  if (track !== undefined && !["label", "entertainment-ai"].includes(track)) {
+    return res.status(400).json({ error: "track must be \"label\" or \"entertainment-ai\"" });
+  }
   if (status && !PIPELINE_STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${PIPELINE_STATUSES.join(", ")}` });
   }
@@ -1058,6 +1129,7 @@ app.post("/api/jobs", (req, res) => {
     url: url || "",
     description: description || "",
     source: "manual",
+    track: track || assignTrack({ source: "manual", title, company }),
     firstSeen: new Date().toISOString(),
     status: status && status !== "none" ? status : null,
     statusDate: statusDate || new Date().toISOString().slice(0, 10),
@@ -1157,6 +1229,9 @@ app.post("/api/rescore", (req, res) => {
   }
   const cache = loadCache();
   const toScore = cache.jobs.filter(j => !j.result);
+  // Older cached jobs may predate tracks — assign before scoring so the
+  // right profile is used
+  for (const j of toScore) if (!j.track) j.track = assignTrack(j);
   if (toScore.length === 0) {
     return res.json({ started: false, message: "All jobs already scored." });
   }
