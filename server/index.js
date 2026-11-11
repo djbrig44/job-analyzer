@@ -296,12 +296,106 @@ async function scrapeAshby({ slug, source, company }) {
   }
 }
 
+// ─── Generic Greenhouse board scraper ────────────────────────────────────────
+async function scrapeGreenhouse({ slug, source, company }) {
+  const url = `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`;
+  try {
+    const { data, status } = await axios.get(url, { headers: { "Accept": "application/json" }, timeout: 15000 });
+    const raw = data.jobs || [];
+    const jobs = raw
+      .filter(j => j.title && j.title.length > 3)
+      .map(j => {
+        const location = j.location?.name || "";
+        let description = "";
+        if (j.content) {
+          try {
+            // content is HTML-escaped HTML: decode once, then strip tags
+            description = cheerio.load(cheerio.load(j.content).text()).text().replace(/\s+/g, " ").trim().substring(0, 3000);
+          } catch (err) { /* description stays empty; JD fetch will fill it */ }
+        }
+        return {
+          title: j.title,
+          company,
+          location,
+          url: j.absolute_url || url,
+          source,
+          id: jobId(source, j.title + location),
+          description,
+        };
+      });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`${company}: ${unique.length} jobs via Greenhouse API`);
+    auditScraper(company, url, status, raw.length, unique);
+    return unique;
+  } catch (e) {
+    console.warn(`⚠️ WARN: ${company} (Greenhouse) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return [];
+  }
+}
+
+// ─── Built In LA aggregator (entertainment-ai lane) ──────────────────────────
+const BUILTINLA_URLS = [
+  "https://www.builtinla.com/jobs/marketing?search=entertainment",
+  "https://www.builtinla.com/jobs/marketing?search=AI",
+];
+async function scrapeBuiltInLA() {
+  const all = [];
+  const seen = new Set();
+  let candidates = 0;
+  let lastStatus = null;
+  try {
+    for (const url of BUILTINLA_URLS) {
+      const { data, status } = await axios.get(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" },
+        timeout: 20000,
+      });
+      lastStatus = status;
+      const $ = cheerio.load(data);
+      const anchors = $("a[href*='/job/']");
+      candidates += anchors.length;
+      anchors.each((_, el) => {
+        const href = $(el).attr("href") || "";
+        // Job detail links end in a numeric id: /job/<slug>/<id>
+        if (!/\/job\/[\w-]+\/\d+/.test(href)) return;
+        const link = href.startsWith("http") ? href : "https://www.builtinla.com" + href;
+        const card = $(el).closest("[data-id], article, li, [class*='card' i], div");
+        let title = $(el).text().replace(/\s+/g, " ").trim();
+        if (!title || title.length < 4) {
+          title = card.find("h2, h3, [class*='title' i]").first().text().replace(/\s+/g, " ").trim();
+        }
+        const company = card.find("a[href*='/company/'], [data-cy*='company' i], [class*='company' i]").first().text().replace(/\s+/g, " ").trim();
+        const cardText = card.text().replace(/\s+/g, " ");
+        const location = (card.find("[class*='location' i]").first().text().replace(/\s+/g, " ").trim()
+          || cardText.match(/\b(?:Greater )?(?:Los Angeles|Santa Monica|Culver City|Burbank|Hollywood|Remote|Hybrid)\b[^|•·]{0,30}?(?:,\s*CA)?/i)?.[0]
+          || "").trim();
+        const salary = cardText.match(/\$[\d,.]+K?\s*[-–]\s*\$?[\d,.]+K?(?:\s*Annually)?/i)?.[0] || "";
+        if (title && title.length > 3 && title.length < 200 && company) {
+          const id = jobId("bila", title + company);
+          if (!seen.has(id)) {
+            seen.add(id);
+            all.push({ title, company, location, url: link, source: "builtinla", id, salary });
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 300));
+    }
+    console.log(`Built In LA: scraped ${all.length} jobs`);
+    auditScraper("Built In LA", BUILTINLA_URLS[0], lastStatus, candidates, all);
+    return all;
+  } catch (e) {
+    console.warn(`⚠️ WARN: Built In LA returned ${all.length} jobs (fetch error) — url=${BUILTINLA_URLS[0]} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return all;
+  }
+}
+
 // Sources that have no public JSON board: HYBE America runs its own Offercent
 // portal (careers.hybecorp.com), Spotify and Red Bull run their own platforms
 // (lifeatspotify.com, jobs.redbull.com) with no documented feed, and Audiomack
 // and Create Music Group expose no ATS board at all. Logged once at boot
 // instead of 404ing every scrape cycle.
 const UNSCRAPEABLE_SOURCES = [
+  { name: "Netflix", reason: "jobs.netflix.com runs on Eightfold; the jobs API needs OAuth and no anonymous endpoint could be confirmed" },
   { name: "HYBE America", reason: "own Offercent portal at careers.hybecorp.com" },
   { name: "Create Music Group", reason: "no public ATS board found" },
   { name: "Spotify", reason: "own platform at lifeatspotify.com, no documented JSON feed" },
@@ -532,7 +626,37 @@ async function scrapeWMG() {
 }
 
 // ─── JD Fetching & Scoring ────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a music industry recruiter AI scoring job postings against a candidate profile.
+// ─── Search tracks ───────────────────────────────────────────────────────────
+// Every job carries a track: "label" (music-label marketing, the original
+// lane) or "entertainment-ai" (AI companies serving entertainment/creators,
+// streaming platforms, entertainment cos modernizing marketing). Assigned at
+// ingest by source default, with a company/title override that can flip a
+// label-source job into the entertainment-ai lane.
+const SOURCE_TRACKS = {
+  mbw: "label", rostr: "label", doorsopen: "label", digilogue: "label",
+  umg: "label", concord: "label", bmg: "label", livenation: "label",
+  wmg: "label", sony: "label",
+  suno: "entertainment-ai",
+  elevenlabs: "entertainment-ai",
+  runway: "entertainment-ai",
+  higgsfield: "entertainment-ai",
+  circle: "entertainment-ai",
+  lumaai: "entertainment-ai",
+  tubi: "entertainment-ai",
+  builtinla: "entertainment-ai",
+};
+const ENT_AI_COMPANY_RE = /spotify|youtube|tiktok|meta|google|apple|amazon|netflix|tubi|roku|snap|adobe/i;
+const ENT_AI_TITLE_RE = /\b(AI|GTM|go-to-market|product marketing|creator|partnerships|growth)\b/i;
+
+function assignTrack(job) {
+  const base = SOURCE_TRACKS[job.source] || "label";
+  if (base === "label" && (ENT_AI_COMPANY_RE.test(job.company || "") || ENT_AI_TITLE_RE.test(job.title || ""))) {
+    return "entertainment-ai";
+  }
+  return base;
+}
+
+const SYSTEM_PROMPT_LABEL = `You are a music industry recruiter AI scoring job postings against a candidate profile.
 
 CANDIDATE: Brian Gaffey
 TITLE: Music Industry Executive | Data-Driven Marketing & Artist Growth Strategy
@@ -562,6 +686,38 @@ Respond ONLY with valid JSON, no markdown:
   "headline": "one sentence summary of fit",
   "recommend": true | false
 }`;
+
+const SYSTEM_PROMPT_ENT_AI = `You are an executive recruiter AI scoring job postings against a candidate profile for an ENTERTAINMENT + AI search track.
+
+CANDIDATE: Brian Gaffey
+TITLE: Entertainment Marketing Executive | AI-Enabled Growth & Partnerships
+EXPERIENCE: 20+ years in entertainment marketing, including Interscope and Def Jam
+LOCATION: Los Angeles, CA (Remote US acceptable)
+
+PROFILE: Cross-channel campaign leadership at major entertainment brands; creator and influencer partnership programs; six-figure campaign budget ownership; a self-built marketing analytics and automation system (SIA) spanning data pipelines, scoring models and reporting; streaming and audience-growth strategy; executive stakeholder management.
+
+SCORING RULES:
+- Score 0-100 based on fit
+- 85-100 = Excellent Match: creator/entertainment/strategic partnerships, growth or audience strategy, AI-enabled marketing strategy, marketing operations or marketing transformation, or entertainment GTM roles — at AI companies serving creative industries, streaming platforms, or entertainment companies.
+- 70-84 = Good Match: product marketing at those same companies. Strong overlap, but where the posting demands consumer-GTM or SaaS lifecycle experience the candidate lacks, say so explicitly in "gaps".
+- 50-69 = Partial Match: creative technology or AI production roles that require hands-on visual production or engineering skills.
+- Below 30 = No Match: enterprise sales quota roles, software engineering, research science.
+
+LOCATION: Remote US is fully acceptable in this track. If a role implies East Coast or Europe hours overlap, note it as a gap — it is NOT a disqualifier and should not lower the score band.
+
+Respond ONLY with valid JSON, no markdown:
+{
+  "score": number,
+  "tier": "Excellent Match" | "Good Match" | "Partial Match" | "Weak Match",
+  "matchedSkills": ["skill1", "skill2"],
+  "gaps": ["gap1"],
+  "headline": "one sentence summary of fit",
+  "recommend": true | false
+}`;
+
+function systemPromptFor(job) {
+  return job.track === "entertainment-ai" ? SYSTEM_PROMPT_ENT_AI : SYSTEM_PROMPT_LABEL;
+}
 
 async function fetchJobDescription(url) {
   try {
@@ -612,7 +768,7 @@ async function scoreJob(job) {
     const res = await axios.post("https://api.anthropic.com/v1/messages", {
       model: SCORING_MODEL,
       max_tokens: 1000,
-      system: SYSTEM_PROMPT,
+      system: systemPromptFor(job),
       messages: [{ role: "user", content: prompt }],
     }, {
       headers: {
@@ -624,6 +780,8 @@ async function scoreJob(job) {
     });
     const text = res.data.content?.find(b => b.type === "text")?.text || "{}";
     const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    // Record which lane's profile produced this result
+    parsed.track = job.track === "entertainment-ai" ? "entertainment-ai" : "label";
     _scoreHealth.lastAttemptAt = new Date().toISOString();
     _scoreHealth.successCount++;
     return parsed;
@@ -652,6 +810,8 @@ const SEED_PIPELINE = [
   { title: "Manager, Music Marketing", company: "Suno", location: "", status: "applied", statusDate: "2026-10-01" },
   { title: "VP/Director of Marketing, West", company: "Audiomack", location: "Remote", status: "applied", statusDate: "2026-10-01" },
   { title: "M&A Marketing Manager", company: "Create Music Group", location: "Los Angeles, CA", status: "applied", statusDate: "2026-10-01" },
+  { title: "Influencer Marketer", company: "ElevenLabs", location: "Remote", status: "saved", statusDate: "2026-11-11", track: "entertainment-ai" },
+  { title: "Director, Creator Growth", company: "Tubi", location: "Los Angeles, CA", status: "saved", statusDate: "2026-11-11", track: "entertainment-ai" },
 ];
 
 function seedPipelineEntries() {
@@ -666,6 +826,7 @@ function seedPipelineEntries() {
       id,
       url: "",
       source: "manual",
+      track: seed.track || "label",
       firstSeen: seed.statusDate,
       notes: "",
       result: null,
@@ -730,11 +891,17 @@ async function sendDigest(jobs, reason) {
   if (!digestEnabled || jobs.length === 0) return false;
   const sorted = [...jobs].sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
   const excellent = sorted.filter((j) => (j.result?.score || 0) >= 85).length;
-  const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent)`;
+  const labelJobs = sorted.filter((j) => j.track !== "entertainment-ai");
+  const entJobs = sorted.filter((j) => j.track === "entertainment-ai");
+  const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent) · ${labelJobs.length} label / ${entJobs.length} ent-AI`;
+  const section = (heading, list) => list.length
+    ? `<h3 style="font-family:Arial,sans-serif;margin:18px 0 6px">${heading}</h3>` + buildDigestHtml(list)
+    : "";
+  const html = section("Label", labelJobs) + section("Entertainment + AI", entJobs);
   try {
     // 15s cap so a hung request can't stall callers (e.g. /api/digest/test)
     const result = await Promise.race([
-      getResend().emails.send({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) }),
+      getResend().emails.send({ from: DIGEST_FROM, to: DIGEST_TO, subject, html }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("Resend send timed out after 15s")), 15000)),
     ]);
     if (result.error) {
@@ -852,7 +1019,7 @@ let _scrapeStartedAt = null;
 // The scrapers run on every scheduled scrape (order matches Promise.all below)
 const SCRAPER_SOURCES = [
   "mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony",
-  "suno",
+  "suno", "elevenlabs", "runway", "higgsfield", "circle", "lumaai", "tubi", "builtinla",
 ];
 
 async function scrapeAllJobs() {
@@ -871,6 +1038,13 @@ async function scrapeAllJobs() {
       scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
       scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG(), scrapeSony(),
       scrapeAshby({ slug: "suno", source: "suno", company: "Suno" }),
+      scrapeAshby({ slug: "elevenlabs", source: "elevenlabs", company: "ElevenLabs" }),
+      scrapeAshby({ slug: "runway-ml", source: "runway", company: "Runway" }),
+      scrapeAshby({ slug: "higgsfieldai", source: "higgsfield", company: "Higgsfield AI" }),
+      scrapeAshby({ slug: "circle", source: "circle", company: "Circle" }),
+      scrapeAshby({ slug: "lumaai", source: "lumaai", company: "Luma AI" }),
+      scrapeGreenhouse({ slug: "tubitv", source: "tubi", company: "Tubi" }),
+      scrapeBuiltInLA(),
     ]);
     const allJobs = scraperResults.flat();
     // Filter out junk CTA entries
@@ -882,9 +1056,16 @@ async function scrapeAllJobs() {
     // Excluded jobs are not stored at all.
     const venueCrewPattern = /\b(security|bartender|barback|server|cook|chef|usher|ticket (taker|seller|agent)|stagehand|stage hand|janitorial|porter|cleaning|custodial|parking|dispatcher|merch(andise)? (staff|seller|cashier)|concessions|seasonal|intern(ship)?|runner|loader|maintenance|box office|guest services|hospitality|catering|food (runner|and beverage|& beverage))\b/i;
     const juniorTitlePattern = /^\s*(coordinator|assistant|analyst|specialist|associate)\b/i;
-    const titleKept = realJobs.filter(
-      (j) => !venueCrewPattern.test(j.title) && !juniorTitlePattern.test(j.title)
-    );
+    // AI boards are heavy on quota roles
+    const salesQuotaPattern = /\b(account executive|sales development|sdr|bdr|solutions engineer|forward deployed)\b/i;
+    // Seniority allowlist: these are never excluded by the junior-prefix or
+    // sales rules (venue-crew still applies)
+    const seniorAllowPattern = /\b(senior|staff|head of|lead|principal)\b/i;
+    const titleKept = realJobs.filter((j) => {
+      if (venueCrewPattern.test(j.title)) return false;
+      if (seniorAllowPattern.test(j.title)) return true;
+      return !juniorTitlePattern.test(j.title) && !salesQuotaPattern.test(j.title);
+    });
     console.log(`Title filter: ${realJobs.length - titleKept.length} excluded, ${titleKept.length} remaining`);
 
     // Two-stage location filter: reject anything naming a non-CA place, then
@@ -900,6 +1081,9 @@ async function scrapeAllJobs() {
     const { jobs: dedupedJobs, merged } = dedupJobs(caJobs);
     console.log(`Dedup: ${merged} merged`);
 
+    // Assign the search track at ingest
+    for (const job of dedupedJobs) job.track = assignTrack(job);
+
     // Preserve existing scores, statuses and firstSeen from cache
     const existingCache = loadCache();
     const existingById = new Map();
@@ -914,7 +1098,11 @@ async function scrapeAllJobs() {
     for (const job of dedupedJobs) {
       const prev = existingById.get(job.id);
       job.firstSeen = prev ? (prev.firstSeen || existingCache.lastUpdated || nowIso) : nowIso;
-      if (prev && (prev.result || prev.status)) {
+      // A job reassigned into the entertainment-ai lane whose existing score
+      // came from the label profile gets rescored; label-track results are
+      // never rescored here.
+      const reassigned = job.track === "entertainment-ai" && prev?.result && prev.result.track !== "entertainment-ai";
+      if (prev && (prev.result || prev.status) && !reassigned) {
         enrichedJobs.push({
           ...job,
           description: prev.description,
@@ -924,8 +1112,11 @@ async function scrapeAllJobs() {
           notes: prev.notes,
         });
       } else {
-        enrichedJobs.push(job);
-        toScore.push(job);
+        const carried = prev
+          ? { ...job, description: prev.description || job.description, status: prev.status, statusDate: prev.statusDate, notes: prev.notes }
+          : job;
+        enrichedJobs.push(carried);
+        toScore.push(carried);
       }
     }
 
@@ -1040,8 +1231,11 @@ app.patch("/api/jobs/:id", (req, res) => {
 
 // Create a manual pipeline entry (recruiter/direct-outreach applications)
 app.post("/api/jobs", (req, res) => {
-  const { title, company, location, url, description, status, statusDate, notes, result } = req.body;
+  const { title, company, location, url, description, status, statusDate, notes, result, track } = req.body;
   if (!title || !company) return res.status(400).json({ error: "title and company are required" });
+  if (track !== undefined && !["label", "entertainment-ai"].includes(track)) {
+    return res.status(400).json({ error: "track must be \"label\" or \"entertainment-ai\"" });
+  }
   if (status && !PIPELINE_STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${PIPELINE_STATUSES.join(", ")}` });
   }
@@ -1058,6 +1252,7 @@ app.post("/api/jobs", (req, res) => {
     url: url || "",
     description: description || "",
     source: "manual",
+    track: track || assignTrack({ source: "manual", title, company }),
     firstSeen: new Date().toISOString(),
     status: status && status !== "none" ? status : null,
     statusDate: statusDate || new Date().toISOString().slice(0, 10),
@@ -1135,6 +1330,28 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// Counts by lane and tier for the dashboard stats bar
+app.get("/api/stats", (req, res) => {
+  const cache = loadCache();
+  const activeStatuses = ["saved", "applied", "screen", "interview", "offer"];
+  const byTrack = {};
+  for (const t of ["label", "entertainment-ai"]) {
+    const jobs = cache.jobs.filter((j) => (j.track === "entertainment-ai" ? "entertainment-ai" : "label") === t);
+    byTrack[t] = {
+      total: jobs.length,
+      scored: jobs.filter((j) => j.result).length,
+      pipeline: jobs.filter((j) => activeStatuses.includes(j.status)).length,
+      tiers: {
+        excellent: jobs.filter((j) => j.result?.tier === "Excellent Match").length,
+        good: jobs.filter((j) => j.result?.tier === "Good Match").length,
+        partial: jobs.filter((j) => j.result?.tier === "Partial Match").length,
+        weak: jobs.filter((j) => j.result?.tier === "Weak Match").length,
+      },
+    };
+  }
+  res.json({ total: cache.jobs.length, lastUpdated: cache.lastUpdated, tracks: byTrack });
+});
+
 // Scoring pipeline health: last attempt, success/failure counts for the most
 // recent run, and the last error seen
 app.get("/api/score-health", (req, res) => {
@@ -1157,6 +1374,9 @@ app.post("/api/rescore", (req, res) => {
   }
   const cache = loadCache();
   const toScore = cache.jobs.filter(j => !j.result);
+  // Older cached jobs may predate tracks — assign before scoring so the
+  // right profile is used
+  for (const j of toScore) if (!j.track) j.track = assignTrack(j);
   if (toScore.length === 0) {
     return res.json({ started: false, message: "All jobs already scored." });
   }

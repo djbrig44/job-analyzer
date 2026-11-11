@@ -45,6 +45,14 @@ const SOURCES = [
   { id: "createmusic", name: "Create Music Group", url: "https://createmusicgroup.com/careers",                color: "#40916C" },
   { id: "audiomack", name: "Audiomack",          url: "https://audiomack.com/about/jobs",                      color: "#FFA62B" },
   { id: "redbull",   name: "Red Bull",           url: "https://jobs.redbull.com/us-en",                        color: "#DB0A40" },
+  { id: "elevenlabs", name: "ElevenLabs",        url: "https://elevenlabs.io/careers",                         color: "#5BC0EB" },
+  { id: "runway",    name: "Runway",             url: "https://runway.com/careers",                            color: "#9EF01A" },
+  { id: "higgsfield", name: "Higgsfield AI",     url: "https://higgsfield.ai",                                 color: "#F72585" },
+  { id: "circle",    name: "Circle",             url: "https://circle.so/careers",                             color: "#4CC9F0" },
+  { id: "lumaai",    name: "Luma AI",            url: "https://lumalabs.ai/careers",                           color: "#B5179E" },
+  { id: "tubi",      name: "Tubi",               url: "https://tubitv.com/careers",                            color: "#FFBA08" },
+  { id: "builtinla", name: "Built In LA",        url: "https://www.builtinla.com/jobs/marketing",              color: "#4895EF" },
+  { id: "netflix",   name: "Netflix",            url: "https://explore.jobs.netflix.net/careers",              color: "#E50914" },
   { id: "manual",    name: "Manual",             url: "",                                                      color: "#CDB4DB" },
 ];
 
@@ -80,6 +88,12 @@ Respond ONLY with valid JSON, no markdown:
 }`;
 
 const DIRECTOR_PLUS = /\b(director|vp|vice president|svp|evp|head of|chief)\b/i;
+const TRACKS = [
+  { key: "all", label: "All", color: "rgba(255,255,255,0.6)" },
+  { key: "label", label: "Label", color: "#FF9F1C" },
+  { key: "entertainment-ai", label: "Ent+AI", color: "#4CC9F0" },
+];
+const trackOf = (job) => (job.track === "entertainment-ai" ? "entertainment-ai" : "label");
 const NEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const tierColors = {
@@ -181,6 +195,11 @@ function JobCard({ job, onRemove, onUpdate }) {
               <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
                 color: "#00FF87", background: "#00FF8722", border: "1px solid #00FF8755" }}>NEW</span>
             )}
+            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
+              color: job.track === "entertainment-ai" ? "#4CC9F0" : "#FF9F1C",
+              border: `1px solid ${job.track === "entertainment-ai" ? "#4CC9F055" : "#FF9F1C55"}` }}>
+              {job.track === "entertainment-ai" ? "ENT+AI" : "LABEL"}
+            </span>
           </div>
           <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 600,
             color: "rgba(255,255,255,0.92)", marginBottom: 3 }}>{job.title}</div>
@@ -257,6 +276,7 @@ export default function App() {
   const [scrapeStatus, setScrapeStatus] = useState("");
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [trackFilter, setTrackFilter] = useState("all");
   const [health, setHealth] = useState(null);
   const [scoreHealth, setScoreHealth] = useState(null);
 
@@ -376,6 +396,7 @@ Return ONLY the JSON object.`;
   const filtered = [...jobs]
     .filter(j => j.status !== "dismissed" && j.status !== "closed") // hide closed-out entries
     .filter(j => !j.result || j.result.score >= 25) // hide scored jobs below 25
+    .filter(j => trackFilter === "all" || trackOf(j) === trackFilter)
     .filter(j => {
       if (filter === "all") return true;
       if (filter === "applied") return j.status === "applied";
@@ -444,7 +465,9 @@ Return ONLY the JSON object.`;
               {/* Stats */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
                 {[
-                  { label: "TOTAL", value: stats.total, color: "rgba(255,255,255,0.7)" },
+                  { label: "TOTAL", value: stats.total, color: "rgba(255,255,255,0.7)",
+                    sub: `${relevantJobs.filter(j => trackOf(j) === "label").length} label · ${relevantJobs.filter(j => trackOf(j) === "entertainment-ai").length} ent-AI`,
+                    subColor: "rgba(255,255,255,0.35)" },
                   { label: "EXCELLENT", value: stats.excellent, color: "#00FF87" },
                   { label: "GOOD MATCH", value: stats.good, color: "#2EC4B6" },
                   { label: "PIPELINE", value: stats.pipeline, color: "#00FF87" },
@@ -523,6 +546,24 @@ Return ONLY the JSON object.`;
                   Analyze Match →
                 </button>
               </div>
+
+              {/* Track pills */}
+              {jobs.length > 0 && (
+                <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "0.1em" }}>TRACK</span>
+                  {TRACKS.map(t => (
+                    <button key={t.key} onClick={() => setTrackFilter(t.key)} style={{
+                      fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "6px 14px", borderRadius: 20,
+                      cursor: "pointer", border: "1px solid",
+                      background: trackFilter === t.key ? t.color + "22" : "transparent",
+                      borderColor: trackFilter === t.key ? t.color : "rgba(255,255,255,0.1)",
+                      color: trackFilter === t.key ? t.color : "rgba(255,255,255,0.4)"
+                    }}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Filter Bar */}
               {jobs.length > 0 && (
@@ -619,6 +660,14 @@ Return ONLY the JSON object.`;
                   createmusic: { status: "⚠ No Public Board",   note: "No public ATS board found. Check createmusicgroup.com/careers manually.", ok: false },
                   audiomack: { status: "⚠ No Public Board",     note: "No public ATS board; roles appear on Wellfound/aggregators. Check manually.", ok: false },
                   redbull:   { status: "⚠ Own Platform",        note: "jobs.redbull.com is Red Bull's own platform, no documented feed. Check manually.", ok: false },
+                  elevenlabs: { status: "✓ Auto-Scraped",       note: "Ashby API board (jobs.ashbyhq.com/elevenlabs). Entertainment-AI lane.", ok: true },
+                  runway:    { status: "✓ Auto-Scraped",        note: "Ashby API board (jobs.ashbyhq.com/runway-ml). Entertainment-AI lane.", ok: true },
+                  higgsfield: { status: "✓ Auto-Scraped",       note: "Ashby API board (jobs.ashbyhq.com/higgsfieldai). Entertainment-AI lane.", ok: true },
+                  circle:    { status: "✓ Auto-Scraped",        note: "Ashby API board (jobs.ashbyhq.com/circle); migrating off Greenhouse circleso.", ok: true },
+                  lumaai:    { status: "✓ Auto-Scraped",        note: "Ashby API board (jobs.ashbyhq.com/lumaai). Entertainment-AI lane.", ok: true },
+                  tubi:      { status: "✓ Auto-Scraped",        note: "Greenhouse board \"tubitv\" (corporate roles, not just campus).", ok: true },
+                  builtinla: { status: "✓ Auto-Scraped",        note: "Aggregator list pages (marketing × entertainment/AI). ATS copies win dedup.", ok: true },
+                  netflix:   { status: "⚠ No Public Feed",      note: "Eightfold portal; jobs API needs OAuth. Check explore.jobs.netflix.net manually.", ok: false },
                   manual:    { status: "✎ Manual",              note: "Recruiter and direct-outreach applications entered by hand.", ok: true },
                 }[s.id] || { status: "—", note: "", ok: false };
                 return (
