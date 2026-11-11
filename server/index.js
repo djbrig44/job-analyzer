@@ -1292,7 +1292,9 @@ async function scrapeAllJobs() {
       }
     }
 
-    const cache = { jobs: enrichedJobs, lastUpdated: new Date().toISOString() };
+    // sourcesSig records which scraper list produced this cache, so a deploy
+    // that adds or removes sources can be detected at boot
+    const cache = { jobs: enrichedJobs, lastUpdated: new Date().toISOString(), sourcesSig: SCRAPER_SOURCES.join(",") };
     saveCache(cache);
     const scored = enrichedJobs.filter(j => j.result).length;
     console.log(`✅ Total saved: ${enrichedJobs.length} jobs (${scored} scored)`);
@@ -1624,8 +1626,12 @@ app.listen(PORT, () => {
         : 999;
       // A fresh cache with only the seeded entries means the volume is empty
       // (or missing) — scrape regardless of age in that case
-      if (age > 6 || cache.jobs.length < 20) {
-        console.log(`Cache stale or thin (${cache.jobs.length} jobs, ${age.toFixed(1)}h old) — running initial scrape...`);
+      // ...and a cache written by a different scraper list means this deploy
+      // changed the sources, which would otherwise wait up to 6h for the cron
+      const sourcesChanged = cache.sourcesSig !== SCRAPER_SOURCES.join(",");
+      if (age > 6 || cache.jobs.length < 20 || sourcesChanged) {
+        const why = sourcesChanged ? "source list changed since last scrape" : "stale or thin";
+        console.log(`Cache ${why} (${cache.jobs.length} jobs, ${age.toFixed(1)}h old) — running initial scrape...`);
         scrapeAllJobs().catch((e) =>
           console.error("Initial scrape error (non-fatal):", e.message)
         );
