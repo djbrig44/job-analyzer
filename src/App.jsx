@@ -465,7 +465,9 @@ Return ONLY the JSON object.`;
               {/* Stats */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
                 {[
-                  { label: "TOTAL", value: stats.total, color: "rgba(255,255,255,0.7)" },
+                  { label: "TOTAL", value: stats.total, color: "rgba(255,255,255,0.7)",
+                    sub: `${relevantJobs.filter(j => trackOf(j) === "label").length} label · ${relevantJobs.filter(j => trackOf(j) === "entertainment-ai").length} ent-AI`,
+                    subColor: "rgba(255,255,255,0.35)" },
                   { label: "EXCELLENT", value: stats.excellent, color: "#00FF87" },
                   { label: "GOOD MATCH", value: stats.good, color: "#2EC4B6" },
                   { label: "PIPELINE", value: stats.pipeline, color: "#00FF87" },

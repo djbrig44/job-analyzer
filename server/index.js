@@ -810,6 +810,8 @@ const SEED_PIPELINE = [
   { title: "Manager, Music Marketing", company: "Suno", location: "", status: "applied", statusDate: "2026-10-01" },
   { title: "VP/Director of Marketing, West", company: "Audiomack", location: "Remote", status: "applied", statusDate: "2026-10-01" },
   { title: "M&A Marketing Manager", company: "Create Music Group", location: "Los Angeles, CA", status: "applied", statusDate: "2026-10-01" },
+  { title: "Influencer Marketer", company: "ElevenLabs", location: "Remote", status: "saved", statusDate: "2026-11-11", track: "entertainment-ai" },
+  { title: "Director, Creator Growth", company: "Tubi", location: "Los Angeles, CA", status: "saved", statusDate: "2026-11-11", track: "entertainment-ai" },
 ];
 
 function seedPipelineEntries() {
@@ -889,11 +891,17 @@ async function sendDigest(jobs, reason) {
   if (!digestEnabled || jobs.length === 0) return false;
   const sorted = [...jobs].sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
   const excellent = sorted.filter((j) => (j.result?.score || 0) >= 85).length;
-  const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent)`;
+  const labelJobs = sorted.filter((j) => j.track !== "entertainment-ai");
+  const entJobs = sorted.filter((j) => j.track === "entertainment-ai");
+  const subject = `Job tracker: ${sorted.length} new matches (${excellent} excellent) · ${labelJobs.length} label / ${entJobs.length} ent-AI`;
+  const section = (heading, list) => list.length
+    ? `<h3 style="font-family:Arial,sans-serif;margin:18px 0 6px">${heading}</h3>` + buildDigestHtml(list)
+    : "";
+  const html = section("Label", labelJobs) + section("Entertainment + AI", entJobs);
   try {
     // 15s cap so a hung request can't stall callers (e.g. /api/digest/test)
     const result = await Promise.race([
-      getResend().emails.send({ from: DIGEST_FROM, to: DIGEST_TO, subject, html: buildDigestHtml(sorted) }),
+      getResend().emails.send({ from: DIGEST_FROM, to: DIGEST_TO, subject, html }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("Resend send timed out after 15s")), 15000)),
     ]);
     if (result.error) {
@@ -1320,6 +1328,28 @@ app.get("/api/health", (req, res) => {
     sources: SCRAPER_SOURCES.length,
     lastUpdated: cache.lastUpdated,
   });
+});
+
+// Counts by lane and tier for the dashboard stats bar
+app.get("/api/stats", (req, res) => {
+  const cache = loadCache();
+  const activeStatuses = ["saved", "applied", "screen", "interview", "offer"];
+  const byTrack = {};
+  for (const t of ["label", "entertainment-ai"]) {
+    const jobs = cache.jobs.filter((j) => (j.track === "entertainment-ai" ? "entertainment-ai" : "label") === t);
+    byTrack[t] = {
+      total: jobs.length,
+      scored: jobs.filter((j) => j.result).length,
+      pipeline: jobs.filter((j) => activeStatuses.includes(j.status)).length,
+      tiers: {
+        excellent: jobs.filter((j) => j.result?.tier === "Excellent Match").length,
+        good: jobs.filter((j) => j.result?.tier === "Good Match").length,
+        partial: jobs.filter((j) => j.result?.tier === "Partial Match").length,
+        weak: jobs.filter((j) => j.result?.tier === "Weak Match").length,
+      },
+    };
+  }
+  res.json({ total: cache.jobs.length, lastUpdated: cache.lastUpdated, tracks: byTrack });
 });
 
 // Scoring pipeline health: last attempt, success/failure counts for the most
