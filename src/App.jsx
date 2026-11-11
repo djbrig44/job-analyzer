@@ -88,6 +88,12 @@ Respond ONLY with valid JSON, no markdown:
 }`;
 
 const DIRECTOR_PLUS = /\b(director|vp|vice president|svp|evp|head of|chief)\b/i;
+const TRACKS = [
+  { key: "all", label: "All", color: "rgba(255,255,255,0.6)" },
+  { key: "label", label: "Label", color: "#FF9F1C" },
+  { key: "entertainment-ai", label: "Ent+AI", color: "#4CC9F0" },
+];
+const trackOf = (job) => (job.track === "entertainment-ai" ? "entertainment-ai" : "label");
 const NEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const tierColors = {
@@ -189,6 +195,11 @@ function JobCard({ job, onRemove, onUpdate }) {
               <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
                 color: "#00FF87", background: "#00FF8722", border: "1px solid #00FF8755" }}>NEW</span>
             )}
+            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, padding: "2px 8px", borderRadius: 4,
+              color: job.track === "entertainment-ai" ? "#4CC9F0" : "#FF9F1C",
+              border: `1px solid ${job.track === "entertainment-ai" ? "#4CC9F055" : "#FF9F1C55"}` }}>
+              {job.track === "entertainment-ai" ? "ENT+AI" : "LABEL"}
+            </span>
           </div>
           <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 600,
             color: "rgba(255,255,255,0.92)", marginBottom: 3 }}>{job.title}</div>
@@ -265,6 +276,7 @@ export default function App() {
   const [scrapeStatus, setScrapeStatus] = useState("");
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [trackFilter, setTrackFilter] = useState("all");
   const [health, setHealth] = useState(null);
   const [scoreHealth, setScoreHealth] = useState(null);
 
@@ -384,6 +396,7 @@ Return ONLY the JSON object.`;
   const filtered = [...jobs]
     .filter(j => j.status !== "dismissed" && j.status !== "closed") // hide closed-out entries
     .filter(j => !j.result || j.result.score >= 25) // hide scored jobs below 25
+    .filter(j => trackFilter === "all" || trackOf(j) === trackFilter)
     .filter(j => {
       if (filter === "all") return true;
       if (filter === "applied") return j.status === "applied";
@@ -531,6 +544,24 @@ Return ONLY the JSON object.`;
                   Analyze Match →
                 </button>
               </div>
+
+              {/* Track pills */}
+              {jobs.length > 0 && (
+                <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "0.1em" }}>TRACK</span>
+                  {TRACKS.map(t => (
+                    <button key={t.key} onClick={() => setTrackFilter(t.key)} style={{
+                      fontFamily: "'DM Mono',monospace", fontSize: 11, padding: "6px 14px", borderRadius: 20,
+                      cursor: "pointer", border: "1px solid",
+                      background: trackFilter === t.key ? t.color + "22" : "transparent",
+                      borderColor: trackFilter === t.key ? t.color : "rgba(255,255,255,0.1)",
+                      color: trackFilter === t.key ? t.color : "rgba(255,255,255,0.4)"
+                    }}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Filter Bar */}
               {jobs.length > 0 && (

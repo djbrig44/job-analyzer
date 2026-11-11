@@ -1048,9 +1048,16 @@ async function scrapeAllJobs() {
     // Excluded jobs are not stored at all.
     const venueCrewPattern = /\b(security|bartender|barback|server|cook|chef|usher|ticket (taker|seller|agent)|stagehand|stage hand|janitorial|porter|cleaning|custodial|parking|dispatcher|merch(andise)? (staff|seller|cashier)|concessions|seasonal|intern(ship)?|runner|loader|maintenance|box office|guest services|hospitality|catering|food (runner|and beverage|& beverage))\b/i;
     const juniorTitlePattern = /^\s*(coordinator|assistant|analyst|specialist|associate)\b/i;
-    const titleKept = realJobs.filter(
-      (j) => !venueCrewPattern.test(j.title) && !juniorTitlePattern.test(j.title)
-    );
+    // AI boards are heavy on quota roles
+    const salesQuotaPattern = /\b(account executive|sales development|sdr|bdr|solutions engineer|forward deployed)\b/i;
+    // Seniority allowlist: these are never excluded by the junior-prefix or
+    // sales rules (venue-crew still applies)
+    const seniorAllowPattern = /\b(senior|staff|head of|lead|principal)\b/i;
+    const titleKept = realJobs.filter((j) => {
+      if (venueCrewPattern.test(j.title)) return false;
+      if (seniorAllowPattern.test(j.title)) return true;
+      return !juniorTitlePattern.test(j.title) && !salesQuotaPattern.test(j.title);
+    });
     console.log(`Title filter: ${realJobs.length - titleKept.length} excluded, ${titleKept.length} remaining`);
 
     // Two-stage location filter: reject anything naming a non-CA place, then
