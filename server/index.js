@@ -296,12 +296,106 @@ async function scrapeAshby({ slug, source, company }) {
   }
 }
 
+// ─── Generic Greenhouse board scraper ────────────────────────────────────────
+async function scrapeGreenhouse({ slug, source, company }) {
+  const url = `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=true`;
+  try {
+    const { data, status } = await axios.get(url, { headers: { "Accept": "application/json" }, timeout: 15000 });
+    const raw = data.jobs || [];
+    const jobs = raw
+      .filter(j => j.title && j.title.length > 3)
+      .map(j => {
+        const location = j.location?.name || "";
+        let description = "";
+        if (j.content) {
+          try {
+            // content is HTML-escaped HTML: decode once, then strip tags
+            description = cheerio.load(cheerio.load(j.content).text()).text().replace(/\s+/g, " ").trim().substring(0, 3000);
+          } catch (err) { /* description stays empty; JD fetch will fill it */ }
+        }
+        return {
+          title: j.title,
+          company,
+          location,
+          url: j.absolute_url || url,
+          source,
+          id: jobId(source, j.title + location),
+          description,
+        };
+      });
+    const seen = new Set();
+    const unique = jobs.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
+    console.log(`${company}: ${unique.length} jobs via Greenhouse API`);
+    auditScraper(company, url, status, raw.length, unique);
+    return unique;
+  } catch (e) {
+    console.warn(`⚠️ WARN: ${company} (Greenhouse) returned 0 jobs — url=${url} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return [];
+  }
+}
+
+// ─── Built In LA aggregator (entertainment-ai lane) ──────────────────────────
+const BUILTINLA_URLS = [
+  "https://www.builtinla.com/jobs/marketing?search=entertainment",
+  "https://www.builtinla.com/jobs/marketing?search=AI",
+];
+async function scrapeBuiltInLA() {
+  const all = [];
+  const seen = new Set();
+  let candidates = 0;
+  let lastStatus = null;
+  try {
+    for (const url of BUILTINLA_URLS) {
+      const { data, status } = await axios.get(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" },
+        timeout: 20000,
+      });
+      lastStatus = status;
+      const $ = cheerio.load(data);
+      const anchors = $("a[href*='/job/']");
+      candidates += anchors.length;
+      anchors.each((_, el) => {
+        const href = $(el).attr("href") || "";
+        // Job detail links end in a numeric id: /job/<slug>/<id>
+        if (!/\/job\/[\w-]+\/\d+/.test(href)) return;
+        const link = href.startsWith("http") ? href : "https://www.builtinla.com" + href;
+        const card = $(el).closest("[data-id], article, li, [class*='card' i], div");
+        let title = $(el).text().replace(/\s+/g, " ").trim();
+        if (!title || title.length < 4) {
+          title = card.find("h2, h3, [class*='title' i]").first().text().replace(/\s+/g, " ").trim();
+        }
+        const company = card.find("a[href*='/company/'], [data-cy*='company' i], [class*='company' i]").first().text().replace(/\s+/g, " ").trim();
+        const cardText = card.text().replace(/\s+/g, " ");
+        const location = (card.find("[class*='location' i]").first().text().replace(/\s+/g, " ").trim()
+          || cardText.match(/\b(?:Greater )?(?:Los Angeles|Santa Monica|Culver City|Burbank|Hollywood|Remote|Hybrid)\b[^|•·]{0,30}?(?:,\s*CA)?/i)?.[0]
+          || "").trim();
+        const salary = cardText.match(/\$[\d,.]+K?\s*[-–]\s*\$?[\d,.]+K?(?:\s*Annually)?/i)?.[0] || "";
+        if (title && title.length > 3 && title.length < 200 && company) {
+          const id = jobId("bila", title + company);
+          if (!seen.has(id)) {
+            seen.add(id);
+            all.push({ title, company, location, url: link, source: "builtinla", id, salary });
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 300));
+    }
+    console.log(`Built In LA: scraped ${all.length} jobs`);
+    auditScraper("Built In LA", BUILTINLA_URLS[0], lastStatus, candidates, all);
+    return all;
+  } catch (e) {
+    console.warn(`⚠️ WARN: Built In LA returned ${all.length} jobs (fetch error) — url=${BUILTINLA_URLS[0]} status=${e.response?.status || "ERR"}: ${e.message}`);
+    return all;
+  }
+}
+
 // Sources that have no public JSON board: HYBE America runs its own Offercent
 // portal (careers.hybecorp.com), Spotify and Red Bull run their own platforms
 // (lifeatspotify.com, jobs.redbull.com) with no documented feed, and Audiomack
 // and Create Music Group expose no ATS board at all. Logged once at boot
 // instead of 404ing every scrape cycle.
 const UNSCRAPEABLE_SOURCES = [
+  { name: "Netflix", reason: "jobs.netflix.com runs on Eightfold; the jobs API needs OAuth and no anonymous endpoint could be confirmed" },
   { name: "HYBE America", reason: "own Offercent portal at careers.hybecorp.com" },
   { name: "Create Music Group", reason: "no public ATS board found" },
   { name: "Spotify", reason: "own platform at lifeatspotify.com, no documented JSON feed" },
@@ -543,6 +637,13 @@ const SOURCE_TRACKS = {
   umg: "label", concord: "label", bmg: "label", livenation: "label",
   wmg: "label", sony: "label",
   suno: "entertainment-ai",
+  elevenlabs: "entertainment-ai",
+  runway: "entertainment-ai",
+  higgsfield: "entertainment-ai",
+  circle: "entertainment-ai",
+  lumaai: "entertainment-ai",
+  tubi: "entertainment-ai",
+  builtinla: "entertainment-ai",
 };
 const ENT_AI_COMPANY_RE = /spotify|youtube|tiktok|meta|google|apple|amazon|netflix|tubi|roku|snap|adobe/i;
 const ENT_AI_TITLE_RE = /\b(AI|GTM|go-to-market|product marketing|creator|partnerships|growth)\b/i;
@@ -910,7 +1011,7 @@ let _scrapeStartedAt = null;
 // The scrapers run on every scheduled scrape (order matches Promise.all below)
 const SCRAPER_SOURCES = [
   "mbw", "rostr", "doorsopen", "digilogue", "umg", "concord", "bmg", "livenation", "wmg", "sony",
-  "suno",
+  "suno", "elevenlabs", "runway", "higgsfield", "circle", "lumaai", "tubi", "builtinla",
 ];
 
 async function scrapeAllJobs() {
@@ -929,6 +1030,13 @@ async function scrapeAllJobs() {
       scrapeMBW(), scrapeROSTR(), scrapeDoorsOpen(), scrapeDigilogue(), scrapeUMG(),
       scrapeConcord(), scrapeBMG(), scrapeLiveNation(), scrapeWMG(), scrapeSony(),
       scrapeAshby({ slug: "suno", source: "suno", company: "Suno" }),
+      scrapeAshby({ slug: "elevenlabs", source: "elevenlabs", company: "ElevenLabs" }),
+      scrapeAshby({ slug: "runway-ml", source: "runway", company: "Runway" }),
+      scrapeAshby({ slug: "higgsfieldai", source: "higgsfield", company: "Higgsfield AI" }),
+      scrapeAshby({ slug: "circle", source: "circle", company: "Circle" }),
+      scrapeAshby({ slug: "lumaai", source: "lumaai", company: "Luma AI" }),
+      scrapeGreenhouse({ slug: "tubitv", source: "tubi", company: "Tubi" }),
+      scrapeBuiltInLA(),
     ]);
     const allJobs = scraperResults.flat();
     // Filter out junk CTA entries

@@ -45,6 +45,14 @@ const SOURCES = [
   { id: "createmusic", name: "Create Music Group", url: "https://createmusicgroup.com/careers",                color: "#40916C" },
   { id: "audiomack", name: "Audiomack",          url: "https://audiomack.com/about/jobs",                      color: "#FFA62B" },
   { id: "redbull",   name: "Red Bull",           url: "https://jobs.redbull.com/us-en",                        color: "#DB0A40" },
+  { id: "elevenlabs", name: "ElevenLabs",        url: "https://elevenlabs.io/careers",                         color: "#5BC0EB" },
+  { id: "runway",    name: "Runway",             url: "https://runway.com/careers",                            color: "#9EF01A" },
+  { id: "higgsfield", name: "Higgsfield AI",     url: "https://higgsfield.ai",                                 color: "#F72585" },
+  { id: "circle",    name: "Circle",             url: "https://circle.so/careers",                             color: "#4CC9F0" },
+  { id: "lumaai",    name: "Luma AI",            url: "https://lumalabs.ai/careers",                           color: "#B5179E" },
+  { id: "tubi",      name: "Tubi",               url: "https://tubitv.com/careers",                            color: "#FFBA08" },
+  { id: "builtinla", name: "Built In LA",        url: "https://www.builtinla.com/jobs/marketing",              color: "#4895EF" },
+  { id: "netflix",   name: "Netflix",            url: "https://explore.jobs.netflix.net/careers",              color: "#E50914" },
   { id: "manual",    name: "Manual",             url: "",                                                      color: "#CDB4DB" },
 ];
 
@@ -619,6 +627,14 @@ Return ONLY the JSON object.`;
                   createmusic: { status: "⚠ No Public Board",   note: "No public ATS board found. Check createmusicgroup.com/careers manually.", ok: false },
                   audiomack: { status: "⚠ No Public Board",     note: "No public ATS board; roles appear on Wellfound/aggregators. Check manually.", ok: false },
                   redbull:   { status: "⚠ Own Platform",        note: "jobs.redbull.com is Red Bull's own platform, no documented feed. Check manually.", ok: false },
+                  elevenlabs: { status: "✓ Auto-Scraped",       note: "Ashby API board (jobs.ashbyhq.com/elevenlabs). Entertainment-AI lane.", ok: true },
+                  runway:    { status: "✓ Auto-Scraped",        note: "Ashby API board (jobs.ashbyhq.com/runway-ml). Entertainment-AI lane.", ok: true },
+                  higgsfield: { status: "✓ Auto-Scraped",       note: "Ashby API board (jobs.ashbyhq.com/higgsfieldai). Entertainment-AI lane.", ok: true },
+                  circle:    { status: "✓ Auto-Scraped",        note: "Ashby API board (jobs.ashbyhq.com/circle); migrating off Greenhouse circleso.", ok: true },
+                  lumaai:    { status: "✓ Auto-Scraped",        note: "Ashby API board (jobs.ashbyhq.com/lumaai). Entertainment-AI lane.", ok: true },
+                  tubi:      { status: "✓ Auto-Scraped",        note: "Greenhouse board \"tubitv\" (corporate roles, not just campus).", ok: true },
+                  builtinla: { status: "✓ Auto-Scraped",        note: "Aggregator list pages (marketing × entertainment/AI). ATS copies win dedup.", ok: true },
+                  netflix:   { status: "⚠ No Public Feed",      note: "Eightfold portal; jobs API needs OAuth. Check explore.jobs.netflix.net manually.", ok: false },
                   manual:    { status: "✎ Manual",              note: "Recruiter and direct-outreach applications entered by hand.", ok: true },
                 }[s.id] || { status: "—", note: "", ok: false };
                 return (
